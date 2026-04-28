@@ -1,0 +1,50 @@
+{
+  "name": "baitong-vision",
+  "version": "0.1.0",
+  "description": "Baitong vision gateway plugin for DeepSeek Harness (DSH). Visual twin adapter (native thumbnails + marker injection) + look_at_image tool backed by a resident opencode_v4_app gateway (Qwen3.6 via Baitong CDN).",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "vision",
+    "baitong",
+    "qwen",
+    "image",
+    "look-at-image"
+  ],
+  "license": "MIT",
+  "author": "EAC",
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-llm": "*"
+  }
+}

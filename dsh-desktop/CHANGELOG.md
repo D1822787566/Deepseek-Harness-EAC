@@ -16,6 +16,36 @@ DeepSeek Harness（dsh）的 Windows 桌面客户端：内置独立 Node 运行�
 4.4.0（本版：修复设置页「Skills 与 MCP → 打开目录」失效 + 安装版更新
 4 目录备份/回滚 + 结构化日志 + 插件自写 patch 行保护）→
 4.6.0（本版：AI 主动修复 —— 救援页一键自动诊断、自动执行修复、自动重启）→
+4.7.0（本版：识图引擎默认状态切换 —— baitong-vision 百通视觉接入 + picturereader 默认禁用）→
+
+## [4.7.0] — 2026-05-07
+
+### 新增：离线模式开关（offlineMode，内网部署专用）
+- `settings.json` 新增 `offlineMode`，**默认开启**（内网优先，避免每次启动撞
+  GitHub/Gitee 联网超时卡顿）。开启后全部自动联网检查跳过：
+  - dsh agent 更新检查（15s 后 + 每 6 小时）与客户端更新检查（60s 后 + 每 12 小时）
+  - 内置插件上游更新检查（20s 后 + 每 6 小时）与启动失败时的客户端更新救援
+  - DeepSeek 余额轮询（api.deepseek.com 内网不可达，原 15s 超时拖慢启动；
+    离线占位推送 Web UI，余额小部件显示离线态）
+- **手动「检查更新」菜单、环境变量 `DSH_DESKTOP_SKIP_*` 均不受影响**。
+- 恢复自动检查：`settings.json` 设 `offlineMode: false`，或临时用环境变量
+  `DSH_DESKTOP_OFFLINE=0`（`=1` 强制离线）。启动日志会打印当前状态与恢复方式。
+- 附带优化：`npm config get registry` 增加会话级 10 分钟缓存 —— 原来插件更新
+  逐个插件 spawn 一次 npm（约 9 连发进程风暴），现在整场会话只查一次。
+
+### 更换：内置识图引擎默认状态（picturereader 默认禁用 → baitong-vision 默认启用）
+- 新增内置插件 **baitong-vision**（默认启用）：复用 picturereader 的**视觉孪生
+  adapter** 机制，把「看图」转发给常驻的 opencode_v4_app（百通 API 应用，
+  默认 `http://localhost:8102`）——被勾选的文本模型声明为支持图片（原生缩略图
+  + 图片块进会话 + 粘贴准入解锁）；图片经 `/v1/chat/completions` 视觉路由
+  副作用上传百通 CDN（data URL 带唯一参数规避 v4_app 缓存指针不刷新），
+  替换为引导 `look_at_image` 工具的文本标记；模型按需调 `look_at_image` 让
+  Qwen3.6 深读最近一张图。
+- **picturereader 改为默认禁用**：存量安装首次落地时 sync 自动补写 disabled
+  行让位，不破坏用户既有手动启停选择；首次启动向导默认勾选同步切换。
+- 两者都会拦截 image block（视觉孪生），互斥；如想换回本地工具链可在
+  「插件 → 管理」对调。
+- 配套：识图链路 e2e 检查改为 baitong-vision（并校验 picturereader 已禁用）。
 
 ## [4.6.0] · 2026-08-20
 

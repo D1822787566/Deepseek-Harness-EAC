@@ -1400,9 +1400,11 @@ function handleBootFailure(err) {
 
 // 启动失败救援（防重入）：一次会话只主动查一次，避免与用户的重试操作
 // 互相干扰；网络失败不打扰（runClientUpdateFlow 的 manual 弹窗已够）。
+// 离线模式（offlineMode）下不触发 —— 内网启动失败是本地问题，联网检查救不了。
 let clientUpdateRescueArmed = false;
 function scheduleClientUpdateRescue() {
   if (clientUpdateRescueArmed || process.env.DSH_DESKTOP_SKIP_CLIENT_UPDATE) return;
+  if (updater.offlineMode(updCtx())) return;
   clientUpdateRescueArmed = true;
   setTimeout(() => {
     runClientUpdateFlow(true).catch((e) => log('client-update', '救援检查失败: ' + e.message));
@@ -3027,6 +3029,26 @@ function createTray() {
 // ---------------------------------------------------------------------------
 
 async function refreshBalance() {
+  // 离线模式（offlineMode）：api.deepseek.com 内网不可达，真实查询会撞 15s
+  // 超时拖慢启动/刷新。直接回一个离线占位（Web UI 余额小部件显示离线态），
+  // 不发起任何网络请求。
+  if (updater.offlineMode(updCtx())) {
+    const s = updater.loadSettings(updCtx());
+    const pricing = balance.computePricingState(s.pricing && s.pricing.peakWindows);
+    const result = {
+      ok: false,
+      offline: true,
+      error: '离线模式：余额查询已禁用（settings.json 的 offlineMode=false 可恢复）',
+      balances: [],
+      prices: balance.DEFAULT_PRICES,
+      pricing: { ...pricing, prices: { peak: balance.FALLBACK_PRICES, offpeak: balance.FALLBACK_PRICES } },
+    };
+    balanceCache = result;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('dsh:balance', result);
+    }
+    return result;
+  }
   const home = dshHome || path.join(os.homedir(), '.dsh');
   let result;
   try {
@@ -3055,6 +3077,11 @@ async function refreshBalance() {
 }
 
 function startBalanceLoop() {
+  // 离线模式不建定时轮询（refreshBalance 内部已返回离线占位，无需周期刷新）。
+  if (updater.offlineMode(updCtx())) {
+    refreshBalance().catch(() => {});
+    return;
+  }
   refreshBalance().catch(() => {});
   balanceTimer = setInterval(() => refreshBalance().catch(() => {}), 15 * 60 * 1000);
   if (balanceTimer.unref) balanceTimer.unref();
@@ -3078,7 +3105,16 @@ const COMPANION_PLUGINS = [
   // 拉取后随应用内置分发。绝不能写进 profile package.json 依赖 ——
   // pnpm 安装会 hoist @deepseek-ai 核心包形成模块双实例（Symbol 冲突，
   // 插件命名空间注册失效，即 "设置命名空间不可用" 故障的根因）。
-  { id: 'picturereader', name: 'picturereader', dir: 'picturereader' },
+  // picturereader：v4.5 起的内置识图引擎。v4.7 起默认禁用，由 baitong-vision
+  // 接管（两者都拦截 image block 的视觉孪生，互斥；baitong-vision 走常驻的
+  // 百通视觉网关 / opencode_v4_app）。需本地工具链的用户可在「设置 → 插件 →
+  // 管理」自行启用。存量安装首次落地 baitong-vision 时见 syncCompanionPlugins
+  // 内的一次性让位迁移。
+  { id: 'picturereader', name: 'picturereader', dir: 'picturereader', disabled: true },
+  // 百通视觉网关（EAC 独占，非 npm 发布）：视觉孪生 + look_at_image 工具，
+  // 依赖常驻的 opencode_v4_app（http://localhost:8102）提供 Qwen3.6 看图能力。
+  // 默认启用 —— 网关没启动时工具会返回明确提示，不拖垮插件树。
+  { id: 'baitong-vision', name: 'baitong-vision', dir: 'baitong-vision' },
   // config.path 必须随行写入：v2.0.0 只写了 id+name，而当时插件 schema 的
   // path 是 required 无默认值，全新安装校验失败拖垮整个插件树（dsh web
   // 退出码 1，应用持续闪退“启动失败”）。schema 现已带默认值，这里显式
@@ -4178,6 +4214,21 @@ function syncCompanionPlugins() {
       changed = true;
       log('boot', '已移除与 bundle 登记重复的 patch 行: ' + deduped.removed.join(', '));
     }
+    // v4.7：picturereader 让位给 baitong-vision（一次性迁移）。
+    // 条件：baitong-vision 行尚不存在（= 本次是它首次落地）且 picturereader
+    // 行已存在（= 存量安装，同步默认的 disabled 行从未写给它）。
+    // 动作：togglePluginInPatch 禁用 picturereader —— 移除 sync 写的 insert 内层
+    // 行、补一条带 disabled: true 的顶层条目（与设置页插件管理的写法一致）。
+    // baitong-vision 行在下方 pending 循环写入后条件不再成立，天然只跑一次；
+    // 用户日后在「设置 → 插件 → 管理」重新启用 picturereader 会被保留。
+    if (!hasEntryId(patch, 'baitong-vision') && hasEntryId(patch, 'picturereader')) {
+      const takeover = togglePluginInPatch(patch, 'picturereader', false, 'picturereader');
+      if (takeover !== patch) {
+        patch = takeover;
+        changed = true;
+        log('boot', 'picturereader 已让位给 baitong-vision（补写 disabled 行）');
+      }
+    }
     for (const p of pending) {
       if (hasEntryId(patch, p.id)) continue;
       // 已在 bundle 列表里的插件由其包内 patch 挂载，overlay 不能再写行
@@ -5048,6 +5099,13 @@ async function boot() {
         // 在 runPluginUpdateCheck 内；默认仅提示，见 plugin-updater.js）。
         setTimeout(() => runPluginUpdateCheck(false), 20000).unref();
         setInterval(() => runPluginUpdateCheck(false), 6 * 3600 * 1000).unref();
+      }
+      // 离线模式（settings.json offlineMode，默认开启；内网部署用）：上述
+      // 自动联网检查全部跳过，避免内网下每次启动撞 GitHub/Gitee 超时卡顿。
+      // 手动「检查更新」菜单、环境变量 DSH_DESKTOP_SKIP_* 均不受影响；
+      // 设 DSH_DESKTOP_OFFLINE=0 或 offlineMode=false 可恢复自动检查。
+      if (updater.offlineMode(updCtx())) {
+        log('boot', '离线模式：已禁用 dsh/客户端/插件自动更新检查（手动菜单仍可用；DSH_DESKTOP_OFFLINE=0 或 settings.offlineMode=false 恢复）');
       }
     })
     .catch((err) => handleBootFailure(err));

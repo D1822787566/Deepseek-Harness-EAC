@@ -28,7 +28,7 @@ const RECOMMENDED_PLUGIN_IDS = new Set([
   'skin-switch',
   'dream-skin',
   'easy-setup',
-  'picturereader',
+  'baitong-vision',
   'soul-md',
   'mobile-fix',
   'better-sidebar',

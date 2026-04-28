@@ -1,0 +1,4 @@
+# baitong-vision - bundle patch: inserts the baitong vision gateway plugin row.
+- insert:
+    - id: baitong-vision
+      name: 'baitong-vision'
