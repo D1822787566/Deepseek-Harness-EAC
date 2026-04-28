@@ -79,10 +79,10 @@ Electron 壳 (main.js) ──spawn 内置 node.exe──▶ dsh web (127.0.0.1:<
 | # | 问题 | 现状/倾向 | 备注 |
 | --- | --- | --- | --- |
 | 1 | 离线严格度：完全断网可用（air-gapped，移除外呼） vs 默认离线+外网可选 | **待定** | 用户后续补充想法 |
-| 2 | 更新机制：更新器（updater.js / client-updater.js / plugin-updater.js）在内网版如何处理 | 待定 | 倾向默认关闭/可配置 |
+| 2 | 更新机制：更新器（updater.js / client-updater.js / plugin-updater.js）在内网版如何处理 | ✅ 已定案：`settings.json` 新增 `offlineMode`（默认 `true`，内网优先），开启后 dsh/客户端/插件自动更新检查、客户端更新救援、余额轮询全部跳过；手动「检查更新」菜单不受影响。`DSH_DESKTOP_OFFLINE=0` 可临时强制联网（2026-04-29 v4.6.x 实现） | 默认关闭 + 可配置 |
 | 3 | 插件来源：在线插件市场 vs 内置插件仓库（离线包） | 待定 | 涉及 dsh-webui-market / dsh-plugin-marketplace |
 | 4 | 遥测：`@deepseek-ai/dsh-session-telemetry` 等是否内置关闭 | 待定 | 数据不出内网原则下应默认关 |
-| 5 | 余额/计费：balance.js 对内网模型无意义，是否移除或改为本地计量 | 待定 | |
+| 5 | 余额/计费：balance.js 对内网模型无意义，是否移除或改为本地计量 | ✅ 已定案（部分）：不移除代码；`offlineMode` 下余额查询跳过（免 15s 超时拖慢启动），Web UI 余额小部件收到离线占位；是否改本地计量待后续 | |
 | 6 | 模型网关：是否需要内置「多端点路由 / 模型别名」层 | 待定 | 首个里程碑可不做 |
 | 7 | 首次体验：内网版 onboarding 引导（本地端点配置向导） | 待定 | 倾向 P0 做 |
 

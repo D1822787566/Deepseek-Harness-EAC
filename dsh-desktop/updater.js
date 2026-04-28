@@ -50,6 +50,30 @@ function saveSettings(ctx, s) {
   catch (err) { ctx.log('update', '保存 settings 失败: ' + err.message); }
 }
 
+// --- offline mode ---------------------------------------------------------
+//
+// 内网/离线部署开关（settings.json 的 offlineMode，默认开启）。开启后所有
+// 自动联网检查（dsh 更新 / 客户端更新 / 插件更新 / 余额轮询）全部跳过，避免
+// 内网下每次启动都撞 15s~4.5min 的联网超时（GitHub/Gitee 不可达时
+// ERR_CERT_DATE_INVALID / 连接超时拖慢启动与界面）。手动「检查更新」菜单
+// 不受影响。
+//
+// 优先级（高→低）：
+//   1. 环境变量 DSH_DESKTOP_OFFLINE=0 → 强制联网（不改 settings 即可恢复）
+//   2. 环境变量 DSH_DESKTOP_OFFLINE=1 → 强制离线
+//   3. settings.json 的 offlineMode === false → 关闭（联网模式）
+//   4. 其余情况（未配置 / 读取失败）→ 开启（内网优先）
+function offlineMode(ctx) {
+  const env = process.env.DSH_DESKTOP_OFFLINE;
+  if (env === '0') return false;
+  if (env === '1') return true;
+  try {
+    return loadSettings(ctx).offlineMode !== false;
+  } catch {
+    return true;
+  }
+}
+
 // --- overlay paths --------------------------------------------------------
 
 function overlayDir(ctx) { return path.join(ctx.userDataDir, 'agent'); }
@@ -193,12 +217,25 @@ function runNpm(ctx, args, { timeoutMs = 30 * 60 * 1000, logStream = null, onOut
 }
 
 // 当前生效的 registry（.npmrc / NPM_CONFIG_REGISTRY），供镜像源链去重与提示。
+// 会话级缓存：同一启动周期内多个调用方（dsh 更新一次、插件更新逐个插件）只
+// spawn 一次 `npm config get registry`，避免内网/慢环境下九连发 npm 进程
+// 风暴拖慢启动。10 分钟内改 .npmrc 需重启生效（可接受，原行为也只是启动期读取）。
+let registryCache = { at: 0, value: undefined };
+const REGISTRY_CACHE_TTL_MS = 10 * 60 * 1000;
 async function currentRegistry(ctx) {
+  const now = Date.now();
+  if (registryCache.value !== undefined && now - registryCache.at < REGISTRY_CACHE_TTL_MS) {
+    return registryCache.value;
+  }
   try {
     const out = await runNpm(ctx, ['config', 'get', 'registry'], { timeoutMs: 30000 });
     const v = String(out || '').trim().replace(/\/+$/, '');
-    return v || null;
-  } catch { return null; }
+    registryCache = { at: now, value: v || null };
+    return registryCache.value;
+  } catch {
+    registryCache = { at: now, value: null };
+    return null;
+  }
 }
 
 // 拼接镜像源尝试链：默认源（尊重用户配置）优先，失败/停滞时依次切镜像。
@@ -458,6 +495,7 @@ module.exports = {
   settingsPath,
   loadSettings,
   saveSettings,
+  offlineMode,
   overlayBinPath,
   overlayVersion,
   bundledVersion,
