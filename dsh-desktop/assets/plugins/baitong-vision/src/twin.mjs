@@ -22,6 +22,7 @@ import { uploadImage, GatewayError } from './gateway.js';
 
 /** sha1 -> 已注入的标记文本（插件生命周期内复用，避免历史图重复上传）。 */
 const markerCache = new Map();
+const TWIN_ADAPTER = Symbol.for('baitong-vision.twin-adapter');
 
 /** 从配置读取被勾选的模型 Map<provider/id, entry>。 */
 function selectedMap(getConfig) {
@@ -135,6 +136,7 @@ export function registerTwinAdapters(ctx, llm, getConfig) {
     let reg;
     try { reg = llm.registration(provider); } catch { continue; }
     if (!reg || !reg.adapter) continue;
+    if (reg.adapter[TWIN_ADAPTER]) continue;
     const orig = reg.adapter;
 
     const origList = orig.listModels.bind(orig);
@@ -143,6 +145,7 @@ export function registerTwinAdapters(ctx, llm, getConfig) {
 
     const twin = new Proxy(orig, {
       get(target, prop, receiver) {
+        if (prop === TWIN_ADAPTER) return true;
         if (prop === 'listModels') {
           return async (p) => (await origList(p)).map((m) => applyVisionMeta(m, p, getConfig));
         }
@@ -171,7 +174,11 @@ export function registerTwinAdapters(ctx, llm, getConfig) {
 
   if (restores.length > 0) {
     ctx.effect(
-      () => () => { for (const { reg, orig } of restores) reg.adapter = orig; },
+      () => () => {
+        for (const { reg, orig } of restores) {
+          if (reg.adapter?.[TWIN_ADAPTER]) reg.adapter = orig;
+        }
+      },
       'baitong-vision: vision twin restore',
     );
   }

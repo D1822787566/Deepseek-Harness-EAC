@@ -42,3 +42,14 @@ test('boot records phase timing around the blocking startup path', () => {
     assert.match(mainSource, new RegExp(`bootTimer\\.mark\\(['"]${stage}['"]\\)`));
   }
 });
+
+test('embedded dsh web never opens an external browser', () => {
+  assert.match(mainSource, /String\(webPort\),\s*['"]--no-open['"]/);
+});
+
+test('shutdown closes logging defensively against late child-process events', () => {
+  assert.match(mainSource, /if\s*\(loggingClosed\)\s*return\s*;/);
+  assert.match(mainSource, /!desktopLog\.writableEnded\s*&&\s*!desktopLog\.destroyed/);
+  assert.match(mainSource, /proc\.once\(['"]close['"][\s\S]*?out\.end\(\)/);
+  assert.match(mainSource, /loggingClosed\s*=\s*true;[\s\S]*?desktopLog\s*=\s*null;/);
+});

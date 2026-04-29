@@ -126,6 +126,8 @@ let userDataDir = '';
 let logsDir = '';
 let dshHome = '';
 let desktopLog = null;
+// 退出末期子进程的 exit/close 事件仍可能异步到达；关闭后禁止再写日志流。
+let loggingClosed = false;
 let tray = null;
 let forceQuit = false;
 let clientUpdateBusy = false;
@@ -238,6 +240,7 @@ function ensureGuard() {
 // ---------------------------------------------------------------------------
 
 function log(tag, msg) {
+  if (loggingClosed) return;
   // 双通道记录（日志系统接入 AC-1 / AC-3）：
   //   1) 旧 desktop.log 纯文本 —— 保留，便于 tail/外部脚本、NSIS 卸载诊断、非结构化查看。
   //   2) 结构化 logger.{level}(msg, { tag, ... }) —— JSON lines + PII 脱敏 + rotation + 诊断 zip 导出。
@@ -250,7 +253,9 @@ function log(tag, msg) {
     `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}` +
     ` UTC${sign}${p(Math.floor(Math.abs(off) / 60))}:${p(Math.abs(off) % 60)}`;
   const line = `[${ts}] [${tag}] ${msg}\n`;
-  try { if (desktopLog) desktopLog.write(line); } catch {}
+  try {
+    if (desktopLog && !desktopLog.writableEnded && !desktopLog.destroyed) desktopLog.write(line);
+  } catch {}
   if (process.env.DSH_DESKTOP_DEBUG) process.stdout.write(line);
   try {
     const level = /^(warn|warning|err|error|fatal)$/i.test(tag) ? 'warn'
@@ -771,7 +776,7 @@ async function startServer(unsafePortRetries = 4, overlays = []) {
     // `--profile <name>` 直接在根命令上（本版本的 `web` 是 --profile web 的
     // 硬编码别名，不接受父级 --profile）；app 入口由 profile bundles 决定，
     // --host/--port 等透传给该 app。已实机冒烟验证 web-desktop 可启动。
-    const proc = spawn(nodeBin, ['--use-system-ca', bin, '--profile', desktopProfile(), '--host', '127.0.0.1', '--port', String(webPort), ...patchArgs], {
+    const proc = spawn(nodeBin, ['--use-system-ca', bin, '--profile', desktopProfile(), '--host', '127.0.0.1', '--port', String(webPort), '--no-open', ...patchArgs], {
       cwd: userDataDir,
       env: childEnv(),
       windowsHide: true,
@@ -863,8 +868,11 @@ function watchServerProc(proc, out, opts = {}) {
         }
       })();
     }
+    // stdout/stderr 可能在 exit 后仍有尾数据；close 才表示 stdio 已全部关闭。
+    proc.once('close', () => {
+      if (!out.writableEnded && !out.destroyed) out.end();
+    });
     proc.on('exit', (code, signal) => {
-      out.end();
       log('dsh', `进程退出 code=${code} signal=${signal}`);
       // 原地重启（插件市场）或已替换为新进程时，不打扰用户、也不清掉新进程的句柄。
       const intentional = restartingServer || serverProc !== proc;
@@ -5019,6 +5027,12 @@ async function boot() {
     try { console.error('[logger.init fail]', e && e.message); } catch {}
   }
   desktopLog = fs.createWriteStream(path.join(logsDir, 'desktop.log'), { flags: 'a' });
+  // Writable 的错误通过 error 事件异步上报，try/catch 捕获不到；避免退出竞态弹框。
+  desktopLog.on('error', (err) => {
+    if (!loggingClosed && process.env.DSH_DESKTOP_DEBUG) {
+      process.stderr.write(`[desktop-log] ${String(err?.message || err)}\n`);
+    }
+  });
   log('boot', `Deepseek Harness EAC（封装 ${APP_VERSION}）  userData=${userDataDir}  dshHome=${dshHome || '(dsh 默认)'}  agent=${dshVersion()}(${dshVersionSource()})`);
 
   // 移除原生菜单栏（文件/视图/帮助），全部功能由自绘 chrome 与托盘提供。
@@ -5205,7 +5219,10 @@ if (!gotLock) {
         // 日志系统 flush：结构化 logger 先关（flush 缓冲区+结束 rotation stream），
         // 再关 desktop.log 纯文本，保证退出前两条通道都落盘。
         try { structuredLogger.close(); } catch {}
-        try { if (desktopLog) desktopLog.end(); } catch {}
+        loggingClosed = true;
+        const finalDesktopLog = desktopLog;
+        desktopLog = null;
+        try { if (finalDesktopLog && !finalDesktopLog.writableEnded) finalDesktopLog.end(); } catch {}
         app.exit(0);
       }
     })();

@@ -107,7 +107,11 @@ export function apply(ctx, config) {
     scope.watch(() => { /* 触发热更 */ });
 
     // ── 扫描所有 provider 的文本模型 → 写入 available_text_models ──
-    (async () => {
+    let scanRunning = false;
+    let scanAgain = false;
+    const scanModels = async () => {
+      if (scanRunning) { scanAgain = true; return; }
+      scanRunning = true;
       try {
         if (!llm || typeof llm.listProviders !== 'function') return;
         const providers = llm.listProviders();
@@ -135,14 +139,16 @@ export function apply(ctx, config) {
             if (!exists) textModels.push({ provider, id, name: id });
           }
         } catch { /* 兜底失败忽略 */ }
-        if (textModels.length > 0) {
-          await mkdir(join(MODELS_CACHE, '..'), { recursive: true });
-          await writeFile(MODELS_CACHE, JSON.stringify(textModels, null, 2));
-        }
+        await mkdir(join(MODELS_CACHE, '..'), { recursive: true });
+        await writeFile(MODELS_CACHE, JSON.stringify(textModels, null, 2));
       } catch {
         // 模型扫描失败静默
+      } finally {
+        scanRunning = false;
+        if (scanAgain) { scanAgain = false; void scanModels(); }
       }
-    })();
+    };
+    void scanModels();
 
     // ── 视觉孪生：包裹被勾选模型所属 provider 的 adapter，声明支持图片 + stream 拦截 ──
     try {
@@ -150,5 +156,11 @@ export function apply(ctx, config) {
     } catch (e) {
       ctx.logger?.warn?.(`[baitong-vision] twin adapters failed: ${String(e?.message || e)}`);
     }
+
+    // 自定义提供方可能晚于本插件注册；适配器变化后重新扫描并补包裹。
+    ctx.on('llm/adapters-updated', () => {
+      void scanModels();
+      try { registerTwinAdapters(ctx, llm, getConfig); } catch {}
+    });
   });
 }

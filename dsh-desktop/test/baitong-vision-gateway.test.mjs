@@ -201,6 +201,28 @@ test('twin: 勾选模型声明 inputModalities + 名称后缀，未勾选不动'
   assert.deepEqual(resolved.inputModalities, ['text', 'image'])
 })
 
+test('twin: 支持无法枚举模型的自定义提供方，并可在晚注册后幂等补包裹', async () => {
+  const customModel = { id: 'my-vision-target', name: 'Custom Text Model' }
+  const adapter = {
+    listModels: async () => [],
+    resolveModel: async (_provider, id) => id === customModel.id ? customModel : undefined,
+    stream: async function* () { yield { type: 'text', text: 'ok' } },
+  }
+  const reg = { adapter }
+  let available = false
+  const llm = { registration: () => available ? reg : undefined }
+  const cfg = CFG({ vision_models: [{ provider: 'custom-openai', id: customModel.id }] })
+  const ctx = { get: () => undefined, effect: () => {} }
+
+  assert.equal(registerTwinAdapters(ctx, llm, cfg), 0)
+  available = true
+  assert.equal(registerTwinAdapters(ctx, llm, cfg), 1)
+  assert.equal(registerTwinAdapters(ctx, llm, cfg), 0, '重复适配器事件不能套多层代理')
+  const resolved = await reg.adapter.resolveModel('custom-openai', customModel.id)
+  assert.deepEqual(resolved.inputModalities, ['text', 'image'])
+  assert.match(resolved.name, /百通视觉/)
+})
+
 test('twin: 图片块上传网关并替换为标记文本；同图只传一次（sha1 去重）', async (t) => {
   _resetMarkerCache()
   const calls = stubFetch(t, () => res(200, 'ok'))

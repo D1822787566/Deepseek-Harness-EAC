@@ -43,6 +43,7 @@ window.__ModuleLoader__.load({
       ".__bv_modelRow{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px}" +
       ".__bv_modelName{flex:1;color:var(--dsw-alias-label-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
       ".__bv_modelProvider{font-size:10px;color:var(--dsw-alias-label-tertiary);max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".__bv_customModel{display:grid;grid-template-columns:1fr 1.4fr auto;gap:6px;margin-top:6px}" +
       ".__bv_empty{font-size:12px;color:var(--dsw-alias-label-tertiary);font-style:italic;padding:8px 0}" +
       ".__bv_gatewayStatus{font-size:11px;border-radius:6px;padding:4px 8px;display:inline-block}" +
       ".__bv_gatewayOk{color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary-alpha)}" +
@@ -84,6 +85,9 @@ window.__ModuleLoader__.load({
       unavailable: "设置命名空间不可用（服务端未注册 baitongvision 命名空间？）",
       loading: "加载中…",
       noModels: "暂无可用模型（重启 DSH 后自动扫描）",
+      customProviderPH: "自定义提供方 ID",
+      customModelPH: "自定义模型 ID",
+      addCustomModel: "添加自定义模型",
     };
     var en = {
       nav: "Baitong Vision",
@@ -110,6 +114,9 @@ window.__ModuleLoader__.load({
       unavailable: "Settings namespace unavailable (baitongvision not registered server-side?)",
       loading: "Loading…",
       noModels: "No models available yet (will appear after DSH restart / model scan)",
+      customProviderPH: "Custom provider ID",
+      customModelPH: "Custom model ID",
+      addCustomModel: "Add custom model",
     };
 
     // ── field spec ────────────────────────────────────────────────────────
@@ -131,6 +138,8 @@ window.__ModuleLoader__.load({
       var scope = props.scope;
       var [available, setAvailable] = react.useState([]);
       var [selected, setSelected] = react.useState([]);
+      var [customProvider, setCustomProvider] = react.useState("");
+      var [customModel, setCustomModel] = react.useState("");
 
       react.useEffect(function () {
         var alive = true;
@@ -172,6 +181,21 @@ window.__ModuleLoader__.load({
         setSelected(next);
         scope.set("vision_models", next).catch(function () {});
       }
+      function addCustomModel() {
+        var provider = customProvider.trim();
+        var id = customModel.trim();
+        if (!provider || !id) return;
+        var model = { provider: provider, id: id, name: id };
+        setAvailable(function (prev) {
+          return prev.some(function (m) { return m.provider === provider && m.id === id; }) ? prev : prev.concat([model]);
+        });
+        if (!selected.some(function (m) { return m.provider === provider && m.id === id; })) {
+          var next = selected.concat([{ provider: provider, id: id, note: "" }]);
+          setSelected(next);
+          scope.set("vision_models", next).catch(function () {});
+        }
+        setCustomModel("");
+      }
 
       var isSelected = function (m) {
         return selected.some(function (s) { return s.id === m.id && s.provider === m.provider; });
@@ -181,13 +205,20 @@ window.__ModuleLoader__.load({
         return entry ? (entry.note || "") : "";
       };
 
+      var shown = available.slice();
+      selected.forEach(function (s) {
+        if (!shown.some(function (m) { return m.provider === s.provider && m.id === s.id; })) {
+          shown.push({ provider: s.provider, id: s.id, name: s.id });
+        }
+      });
+
       return h("div", { className: "__bv_field" },
         h("span", { className: "__bv_label" }, t("visionModels")),
         h("span", { className: "__bv_hint" }, t("visionModelsHint")),
-        available.length === 0
+        shown.length === 0
           ? h("p", { className: "__bv_empty" }, t("noModels"))
           : h("div", { className: "__bv_modelList" },
-              available.map(function (m) {
+              shown.map(function (m) {
                 var key = m.provider + "/" + m.id;
                 var checked = isSelected(m);
                 return h("div", { key: key, className: "__bv_modelRow" },
@@ -208,22 +239,25 @@ window.__ModuleLoader__.load({
                   }) : null
                 );
               })
-            )
+            ),
+        h("div", { className: "__bv_customModel" },
+          h("input", { className: "__bv_input", value: customProvider, placeholder: t("customProviderPH"), onChange: function (e) { setCustomProvider(e.target.value); } }),
+          h("input", { className: "__bv_input", value: customModel, placeholder: t("customModelPH"), onChange: function (e) { setCustomModel(e.target.value); } }),
+          h("button", { type: "button", className: "__bv_btn", disabled: !customProvider.trim() || !customModel.trim(), onClick: addCustomModel }, t("addCustomModel"))
+        )
       );
     }
 
     // ── Gateway 状态探针 ─────────────────────────────────────────────────
     function GatewayStatus(props) {
       var t = props.t;
-      var scope = props.scope;
+      var base = props.base;
       var [state, setState] = react.useState("idle"); // idle | probing | ok | down
 
       function probe() {
         setState("probing");
-        var snap = scope.getSnapshot();
-        if (snap.status !== "ready" || !snap.value) { setState("idle"); return; }
-        var base = String(snap.value.gateway_base || "").trim() || "http://localhost:8102";
-        var url = base.replace(/\/+$/, "") + "/health";
+        var target = String(base || "").trim() || "http://localhost:8102";
+        var url = target.replace(/\/+$/, "") + "/health";
         fetch(url, { signal: AbortSignal.timeout(5000) })
           .then(function (res) { setState(res.ok ? "ok" : "down"); })
           .catch(function () { setState("down"); });
@@ -312,6 +346,13 @@ window.__ModuleLoader__.load({
           return o.op === "set" ? scope.set(o.key, o.value) : scope.unset(o.key);
         });
         Promise.all(writes).then(function () {
+          var fresh = scope.getSnapshot();
+          if (fresh.status !== "ready" || !fresh.value) throw new Error("settings write was not confirmed");
+          var mismatch = ops.some(function (o) {
+            if (o.op === "unset") return false;
+            return fresh.value[o.key] !== o.value;
+          });
+          if (mismatch) throw new Error("settings write was not confirmed");
           setBusy(false); setNotice(t("saved"));
         }).catch(function (e) {
           setBusy(false); setError(t("error") + ": " + String(e && e.message || e));
@@ -344,7 +385,7 @@ window.__ModuleLoader__.load({
         }
         return h("label", { key: f.key, className: "__bv_field" },
           h("span", { className: "__bv_label" }, t(FIELD_LABELS[f.key])),
-          f.key === "gateway_base" ? h(GatewayStatus, { t: t, scope: scope }) : null,
+          f.key === "gateway_base" ? h(GatewayStatus, { t: t, base: fieldDraft(f) }) : null,
           h("input", {
             className: "__bv_input",
             type: f.type === "number" ? "number" : "text",
