@@ -22,7 +22,6 @@ const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const os = require('node:os');
 const { createHash } = require('node:crypto');
-const archiver = require('archiver');
 
 const CATALOG_URL = 'https://awesome-dsh-plugin.com/plugins.json';
 const MARKET_DIR = path.resolve(__dirname, '..', 'assets', 'market-cache');
@@ -92,7 +91,9 @@ function parseArgs(argv) {
 /** 判断目录条目的三源类型与可达性，返回 { ok, source, version?, error? }。
  *  每次 fetch 带 AbortSignal.timeout 超时（设计要求「404/超时剔除」）；
  *  catch 保留分支 source 标签，report.json 不误标。 */
-async function probeEntry(entry, { npmRegistry = 'https://registry.npmjs.org', timeoutMs = 10000 } = {}) {
+// probe 超时 30s：慢网环境（实测单请求 11s+）下 10s 误杀率过高，被误杀的
+// 条目虽然重跑可捞回，但白费整轮探测；404/真死链 30s 内也会被剔除。
+async function probeEntry(entry, { npmRegistry = 'https://registry.npmjs.org', timeoutMs = 30000 } = {}) {
   let src = 'unknown';
   try {
     const install = String((entry && entry.install) || '');
@@ -130,6 +131,13 @@ const NATIVE_ALLOWLIST = new Set(['sharp', 'node-pty', 'koffi', 'prebuild-instal
 
 const npmCmd = () => (process.platform === 'win32' ? 'npm.cmd' : 'npm');
 
+/** tar 可执行文件：Windows 固定 System32 bsdtar 绝对路径。git-bash 环境下
+ *  PATH 里 MSYS GNU tar 优先，会把 C:\... 参数当"远程主机:路径"规格
+ *  （Cannot connect to C:）；固定 bsdtar 使打包/解包与启动 shell 无关。 */
+const tarBin = process.platform === 'win32'
+  ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+  : 'tar';
+
 /** 执行 npm：Windows 无法直接 spawn .cmd（ENOENT/EINVAL），走 cmd.exe /c；
  *  POSIX 直接 spawn。避免 shell:true + args（Node ≥22 弃用 DEP0190，参数不转义）。 */
 function spawnNpm(args, { cwd, timeoutMs, cmd = npmCmd() } = {}) {
@@ -152,7 +160,7 @@ async function download(url, dest, { timeoutMs = 10000 } = {}) {
 /** 解包 tgz 到 dest 目录（Windows 10 1803+ 自带 tar.exe）。 */
 function extractTgz(tgz, dest) {
   fs.mkdirSync(dest, { recursive: true });
-  const r = spawnSync('tar', ['-xzf', tgz, '-C', dest], { stdio: 'pipe', encoding: 'utf8' });
+  const r = spawnSync(tarBin, ['-xzf', tgz, '-C', dest], { stdio: 'pipe', encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`tar 解包失败: ${(r.error && r.error.message || (r.stderr || r.stdout || '')).slice(0, 300)}`);
 }
 
@@ -208,17 +216,13 @@ async function sha256File(p) {
   });
 }
 
-/** 目录 → 单文件 tgz（archiver），返回 sha256。 */
+/** 目录 → 单文件 tgz（系统 tar -czf，平铺），返回 sha256。 */
 async function packTgz(dir, outTgz) {
-  await new Promise((resolve, reject) => {
-    const out = fs.createWriteStream(outTgz);
-    const a = archiver('tar', { gzip: true, gzipOptions: { level: 6 } });
-    a.on('error', reject);
-    out.on('close', resolve);
-    a.pipe(out);
-    a.directory(dir, false);
-    a.finalize();
-  });
+  // 不再用 archiver：本机 archiver@7.0.1 + tar-stream@3.2.0 打包目录确定性
+  // 报 'Size mismatch'，产出截断 gzip（test/market-offline.test.mjs 在本机
+  // 2 失败同根因）。解包本就依赖 tar.exe（Win10 1803+ 自带），打包同样走它。
+  const r = spawnSync(tarBin, ['-czf', outTgz, '-C', dir, '.'], { stdio: 'pipe', encoding: 'utf8', timeout: 10 * 60 * 1000 });
+  if (r.status !== 0) throw new Error('tar 打包失败: ' + ((r.error && r.error.message) || r.stderr || r.stdout || '').slice(0, 300));
   return sha256File(outTgz);
 }
 
@@ -250,8 +254,8 @@ async function mirrorOne(entry, ctx) {
   if (!probed.ok) return { slug, entry, ok: false, stage: 'probe', error: probed.error };
 
   const work = fs.mkdtempSync(join(os.tmpdir(), 'mirror-work-'));
+  const tgzPath = join(ctx.cacheDir, slug + '.tgz');
   try {
-    const tgzPath = join(ctx.cacheDir, slug + '.tgz');
     // 断点续跑：已存在且 sha256 命中 manifest 则跳过。
     if (fs.existsSync(tgzPath) && ctx.manifest.entries[slug] && await sha256File(tgzPath) === ctx.manifest.entries[slug].sha256) {
       return { slug, entry, ok: true, stage: 'resume', version: ctx.manifest.entries[slug].version };
@@ -270,7 +274,7 @@ async function mirrorOne(entry, ctx) {
     } else if (probed.source === 'github') {
       const tar = join(work, 'repo.tgz');
       // codeload 整仓 tarball 可能超 10s（download 默认超时偏紧）→ 放宽到 120s。
-      await download(`https://codeload.github.com/${probed.repo}/tar.gz/HEAD`, tar, { timeoutMs: 120 * 1000 });
+      await download(`https://codeload.github.com/${probed.repo}/tar.gz/HEAD`, tar, { timeoutMs: 300 * 1000 });
       extractTgz(tar, join(work, 'repo'));
       const top = fs.readdirSync(join(work, 'repo')).map((n) => join(work, 'repo', n)).find((p) => fs.statSync(p).isDirectory());
       const pathSpec = /#path:(\/[^#]*)/.exec(entry.install || '');
@@ -316,6 +320,9 @@ async function mirrorOne(entry, ctx) {
     };
     return { slug, entry, ok: true, stage: 'mirrored', version: pkg.version || probed.version || '', sizeBytes };
   } catch (err) {
+    // 失败时清掉半成品 tgz：截断文件留在缓存目录会伪装成进度，且下次
+    // 重跑因 manifest 无记录会重新镜像，留着有害无益。
+    try { fs.rmSync(tgzPath, { force: true }); } catch { /* 已不存在 */ }
     return { slug, entry, ok: false, stage: 'materialize', error: String((err && err.message) || err) };
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
@@ -357,7 +364,20 @@ async function main(argv) {
   let prev = null;
   try { prev = JSON.parse(fs.readFileSync(join(MARKET_DIR, 'manifest.json'), 'utf8')); } catch {}
   const manifest = { updated: new Date().toISOString().slice(0, 10), source: CATALOG_URL, entries: Object.assign({}, (prev && prev.entries) || {}) };
-  const results = await mapLimit(target, CONCURRENCY, (e) => mirrorOne(e, { cacheDir: MARKET_DIR, manifest, npmRegistry: 'https://registry.npmjs.org' }));
+  // 检查点 + 实时进度：每成功一个立即把 manifest 落盘（任意时刻 Ctrl+C 都可
+  // 断点续跑；失败项不进 manifest，重跑自动重试），并逐条打印进度（此前只在
+  // 全部结束时输出汇总，长时间静默像卡死）。
+  let processed = 0;
+  const results = await mapLimit(target, CONCURRENCY, (e) => mirrorOne(e, { cacheDir: MARKET_DIR, manifest, npmRegistry: 'https://registry.npmjs.org' }).then((r) => {
+    processed++;
+    if (r.ok) {
+      writeManifest(manifest, join(MARKET_DIR, 'manifest.json'));
+      console.log(`[mirror] ${processed}/${target.length} ${r.stage === 'resume' ? 'skip' : 'ok'} ${r.slug}`);
+    } else {
+      console.log(`[mirror] ${processed}/${target.length} FAIL ${r.slug} (${r.stage}): ${String(r.error || '').slice(0, 120)}`);
+    }
+    return r;
+  }));
   const failed = results.filter((r) => !r.ok);
   writeManifest(manifest, join(MARKET_DIR, 'manifest.json'));
   const stats = { count: results.filter((r) => r.ok).length, failed: failed.length, sizeBytes: Object.values(manifest.entries).reduce((s, e) => s + (e.sizeBytes || 0), 0) };
@@ -369,7 +389,7 @@ async function main(argv) {
 
 const CONCURRENCY = 8;
 
-module.exports = { CATALOG_URL, MARKET_DIR, EXPERIMENTAL_RE, slugOf, dedupeKey, specOfInstall, cleanCatalog, probeEntry, parseArgs, download, extractTgz, materializeLocalDir, installClosure, listDeps, rebuildAllowlisted, runRebuild, packageNameOf, NATIVE_ALLOWLIST, npmCmd, packTgz, sha256File, writeManifest, resolvePackageSubdir, mirrorOne, mapLimit, fetchCatalog, main, CONCURRENCY };
+module.exports = { CATALOG_URL, MARKET_DIR, EXPERIMENTAL_RE, slugOf, dedupeKey, specOfInstall, cleanCatalog, probeEntry, parseArgs, download, extractTgz, materializeLocalDir, installClosure, listDeps, rebuildAllowlisted, runRebuild, packageNameOf, NATIVE_ALLOWLIST, npmCmd, tarBin, packTgz, sha256File, writeManifest, resolvePackageSubdir, mirrorOne, mapLimit, fetchCatalog, main, CONCURRENCY };
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch((err) => { console.error('[mirror] fatal:', err); process.exit(1); });
