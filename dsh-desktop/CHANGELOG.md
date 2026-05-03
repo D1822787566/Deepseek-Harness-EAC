@@ -19,6 +19,16 @@ DeepSeek Harness（dsh）的 Windows 桌面客户端：内置独立 Node 运行�
 
 ## [4.6.0] · 2026-08-20
 
+### 新增：预装思考级别设置插件（dsh-thinking-levels-settings）
+- 内置社区插件 [dsh-thinking-levels-settings](https://github.com/blackteaYES/dsh-thinking-levels-settings)
+  v2.0.0（MIT，GitHub Release 预构建产物原样分发）：设置页新增「思考级别」分区，
+  为自定义 `llm-pi-ai` 提供商的每个模型配置推理档位（off/minimal/low/medium/
+  high/xhigh/max），经官方 Settings wire 持久化到 `settings.yaml`。与
+  dsh-third-party-thinking（对话时控件）互补：这里按模型落盘、跨会话生效。
+  纯客户端实现，无 llm-pi-ai 自定义提供商时页面提示「尚未加载」。
+- 不登记内置插件自动更新源：上游 `lib/` 为 gitignore，codeload 源码 tarball
+  无构建产物，自动更新会装出坏包；升级走手动替换 assets 副本。
+
 ### 新增：AI 主动修复（一键全自动）
 - 救援页新增「AI 自动修复」按钮：一键串联 诊断 → AI 分析 → 自动执行修复 →
   自动重启 全链路，最多迭代两轮；高风险动作（回滚/卸载）自动跳过，多轮

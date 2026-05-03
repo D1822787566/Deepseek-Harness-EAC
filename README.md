@@ -167,6 +167,7 @@ Linux 打包由社区开发者 [@Luoye-hb](https://github.com/Luoye-hb) 贡献�
 - **稳定性自愈**：`profile-module-heal` 自动修复 profile 模块遮蔽问题（真实目录与 pnpm 链接双形态，如 `prompt section already registered`、「设置命名空间不可用」、模型列表/模式切换失效）；`plugin-guard` 守护启动失败链路（体检 → 修复 → 回滚 → 事故报告）；重启服务时等待旧进程完全退出（释放文件锁）再启动新服务，插件包（含自带 vendor 依赖）随安装包原样分发
 - **临时对话（v4 新增，dsh-side-session）**：DSH 临时会话：独立悬浮窗，自动导入当前主对话上下文，发起不污染主会话的临时追问
 - **自定义第三方模型思考强度（v4 新增，dsh-third-party-thinking）**：让接入的第三方模型也能在使用时调整思考强度
+- **思考级别设置（v4.6 新增，dsh-thinking-levels-settings）**：设置页「思考级别」分区，为自定义 `llm-pi-ai` 提供商的每个模型配置推理档位（off/minimal~max）并持久化到 `settings.yaml`，与对话时思考强度控件互补
 - **对话节点导航条（v4 新增，dsh-navbar）**：user 消息快速跳转
 - **微信ClawBot**(v4.1新增)：一键将Deepseek-Harness-EAC接入ClawBot
 

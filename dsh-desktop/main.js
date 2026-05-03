@@ -3188,6 +3188,14 @@ const COMPANION_PLUGINS = [
   // 临时目录 → 注入完整路径提示（配合 inspect_image 视觉工具）；纯客户端
   // 实现（host 半边 no-op，仅用受控 IPC dsh:image-paste-save）。
   { id: 'image-paste', name: 'dsh-image-paste', dir: 'dsh-image-paste' },
+  // 设置页「思考级别」分区（V4.6，blackteaYES/dsh-thinking-levels-settings，MIT）：
+  // 为自定义 llm-pi-ai 提供商的每个模型配置推理档位（off/minimal/low/medium/
+  // high/xhigh/max），经官方 Settings wire 持久化到 settings.yaml
+  // （providers.*.models[*].reasoningEfforts）。与 third-party-thinking（对话时
+  // 控件）互补：这里按模型落盘、跨会话生效。纯客户端实现（host 半边空 apply）。
+  // 不登记 PLUGIN_UPDATE_SOURCES：上游 lib/ 为 gitignore，codeload 源码 tarball
+  // 无构建产物，自动更新会装出坏包；升级走手动替换 assets 副本。
+  { id: 'ui-thinking-levels-settings', name: 'dsh-thinking-levels-settings', dir: 'dsh-thinking-levels-settings' },
 ];
 
 // ---------------------------------------------------------------------------
