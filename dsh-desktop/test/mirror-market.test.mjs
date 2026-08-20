@@ -1,7 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   slugOf, dedupeKey, cleanCatalog, parseArgs, probeEntry,
+  materializeLocalDir, installClosure, rebuildAllowlisted,
 } from '../scripts/mirror-market.js'
 
 test('slugOf: 归一化各种 install 源', () => {
@@ -103,4 +107,34 @@ test('probeEntry: 无任何源信号 → unknown / no install command', async ()
   assert.equal(r.ok, false)
   assert.equal(r.source, 'unknown')
   assert.equal(r.error, 'no install command')
+})
+
+function makePluginDir() {
+  const dir = mkdtempSync(join(tmpdir(), 'mirror-fixture-'))
+  mkdirSync(join(dir, 'lib'), { recursive: true })
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fixture-plugin', version: '0.0.1', main: 'lib/index.js' }))
+  writeFileSync(join(dir, 'lib', 'index.js'), 'module.exports = {};\n')
+  return dir
+}
+
+test('materializeLocalDir: 保留插件包结构并返回包根', async () => {
+  const src = makePluginDir()
+  const dest = mkdtempSync(join(tmpdir(), 'mirror-mat-'))
+  const root = await materializeLocalDir(src, dest)
+  assert.ok(existsSync(join(root, 'package.json')))
+  rmSync(src, { recursive: true, force: true })
+  rmSync(dest, { recursive: true, force: true })
+})
+
+test('installClosure: 空依赖插件零网络可完成（npm install 静默失败不阻断）', async () => {
+  const dir = makePluginDir()
+  const r = await installClosure(dir, { npmCmd: 'npm' })
+  // 不联网时 npm install 可能失败——允许失败但必须返回对象且不抛异常
+  assert.equal(typeof r, 'object')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('rebuildAllowlisted: 只对白名单内的包返回 rebuild 列表', () => {
+  const names = rebuildAllowlisted(['sharp', 'left-pad', 'node-pty', 'koffi', 'tiny'])
+  assert.deepEqual(names.sort(), ['koffi', 'node-pty', 'sharp'])
 })
