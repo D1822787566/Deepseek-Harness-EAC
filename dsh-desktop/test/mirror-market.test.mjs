@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  slugOf, dedupeKey, cleanCatalog, parseArgs,
+  slugOf, dedupeKey, cleanCatalog, parseArgs, probeEntry,
 } from '../scripts/mirror-market.js'
 
 test('slugOf: 归一化各种 install 源', () => {
@@ -60,4 +60,31 @@ test('cleanCatalog: 同名不同作者仓库 slug 冲突 → 保留第一个，�
   assert.equal(kept.length, 1)
   assert.equal(dropped.length, 1)
   assert.equal(dropped[0].reason, 'slug-collision')
+})
+
+test('probeEntry: npm 源从 registry 拿版本（fetch stub）', async () => {
+  const calls = []
+  globalThis.fetch = async (url, opts) => {
+    calls.push(url)
+    return { ok: true, json: async () => ({ 'dist-tags': { latest: '1.2.3' } }) }
+  }
+  const r = await probeEntry({ npm: 'dsh-pet' }, { npmRegistry: 'https://registry.npmjs.org' })
+  assert.equal(r.ok, true)
+  assert.equal(r.version, '1.2.3')
+  assert.ok(calls[0].includes('registry.npmjs.org'))
+})
+
+test('probeEntry: github 源 codeload HEAD 404 → 死链', async () => {
+  globalThis.fetch = async (url, opts) => {
+    if (opts && opts.method === 'HEAD') return { ok: false, status: 404 }
+    return { ok: false, status: 404 }
+  }
+  const r = await probeEntry({ url: 'https://github.com/gone/dsh-x', install: 'dsh plugin --profile web add github:gone/dsh-x' })
+  assert.equal(r.ok, false)
+  assert.match(r.error || '', /404|HEAD/i)
+})
+
+test('probeEntry: 无 install 命令 → 不可装', async () => {
+  const r = await probeEntry({ url: 'https://github.com/a/b', install: null })
+  assert.equal(r.ok, false)
 })
