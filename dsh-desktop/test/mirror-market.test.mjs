@@ -1,0 +1,49 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  slugOf, dedupeKey, cleanCatalog, parseArgs,
+} from '../scripts/mirror-market.js'
+
+test('slugOf: 归一化各种 install 源', () => {
+  assert.equal(slugOf('github:owner/dsh-pet'), 'dsh-pet')
+  assert.equal(slugOf('github:owner/dsh-pet#path:/packages/x'), 'dsh-pet')
+  assert.equal(slugOf('@scope/dsh-tool@1.2.3'), 'scope-dsh-tool')
+  assert.equal(slugOf('dsh-emoji'), 'dsh-emoji')
+  assert.equal(slugOf('https://github.com/x/y/releases/download/v1/a.tgz'), 'a')
+})
+
+test('dedupeKey: npm 名优先，否则 owner/repo（同名不同作者不误杀）', () => {
+  assert.equal(dedupeKey({ npm: 'dsh-pet', url: 'https://github.com/PC2005-cloud/dsh-pet' }), 'dsh-pet')
+  assert.equal(dedupeKey({ npm: null, url: 'https://github.com/Awu12277/dsh-stock-watch' }), 'awu12277/dsh-stock-watch')
+  // 目录里存在两个不同作者的 dsh-stock-watch —— owner/repo 去重保证两者都保留
+  assert.notEqual(dedupeKey({ npm: null, url: 'https://github.com/Bob-Bo1/dsh-stock-watch' }), dedupeKey({ npm: null, url: 'https://github.com/Awu12277/dsh-stock-watch' }))
+})
+
+test('cleanCatalog: 去重保留第一条并记录 dropped', () => {
+  const entries = [
+    { npm: 'a', name: 'a1' },
+    { npm: 'a', name: 'a2' },
+    { npm: null, url: 'https://github.com/ow1/dsh-x' },
+    { npm: null, url: 'https://github.com/ow1/dsh-x' },
+  ]
+  const { kept, dropped } = cleanCatalog(entries)
+  assert.equal(kept.length, 2)
+  assert.equal(dropped.length, 2)
+  assert.ok(dropped.every((d) => d.reason === 'duplicate'))
+})
+
+test('cleanCatalog: 描述含 NSFW/成人/电刺激关键词 → experimental', () => {
+  const zh = { npm: null, url: 'https://github.com/a/b', description: { zh: '成人向内容' } }
+  const en = { npm: null, url: 'https://github.com/c/d', description: { en: 'NSFW mode' } }
+  const plain = { npm: null, url: 'https://github.com/e/f', description: { zh: '普通插件' } }
+  const { kept } = cleanCatalog([zh, en, plain])
+  assert.equal(kept[0].experimental, true)
+  assert.equal(kept[1].experimental, true)
+  assert.equal(kept[2].experimental, false)
+})
+
+test('parseArgs: --limit 与 --only', () => {
+  assert.deepEqual(parseArgs(['--limit', '20']), { limit: 20, only: null })
+  assert.deepEqual(parseArgs(['--only', 'npm', '--limit', '5']), { limit: 5, only: 'npm' })
+  assert.deepEqual(parseArgs([]), { limit: Infinity, only: null })
+})

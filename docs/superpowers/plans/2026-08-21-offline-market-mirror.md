@@ -103,9 +103,11 @@ test('slugOf: 归一化各种 install 源', () => {
   assert.equal(slugOf('https://github.com/x/y/releases/download/v1/a.tgz'), 'a')
 })
 
-test('dedupeKey: npm 名优先，否则 repo 名', () => {
+test('dedupeKey: npm 名优先，否则 owner/repo（同名不同作者不误杀）', () => {
   assert.equal(dedupeKey({ npm: 'dsh-pet', url: 'https://github.com/PC2005-cloud/dsh-pet' }), 'dsh-pet')
-  assert.equal(dedupeKey({ npm: null, url: 'https://github.com/Awu12277/dsh-stock-watch' }), 'dsh-stock-watch')
+  assert.equal(dedupeKey({ npm: null, url: 'https://github.com/Awu12277/dsh-stock-watch' }), 'awu12277/dsh-stock-watch')
+  // 目录里存在两个不同作者的 dsh-stock-watch —— owner/repo 去重保证两者都保留
+  assert.notEqual(dedupeKey({ npm: null, url: 'https://github.com/Bob-Bo1/dsh-stock-watch' }), dedupeKey({ npm: null, url: 'https://github.com/Awu12277/dsh-stock-watch' }))
 })
 
 test('cleanCatalog: 去重保留第一条并记录 dropped', () => {
@@ -174,17 +176,18 @@ const MARKET_DIR = path.resolve(__dirname, '..', 'assets', 'market-cache');
 // 描述里命中这些词 → experimental（默认折叠）：NSFW/成人/硬件控制类。
 const EXPERIMENTAL_RE = /(NSFW|R18|成人|电击|电刺激|stimulation|e-stim|Coyote)/i;
 
-/** install 源 → 稳定 slug（manifest 主键）。 */
+/** install 源 → 稳定 slug（manifest 主键）。@scope/name → scope-name。 */
 function slugOf(source) {
   let s = String(source || '').trim();
   s = s.replace(/^(github|gitlab|bitbucket|link|file|npm):/, '');
   s = s.replace(/#.*$/, '');                       // #path:/... 或 #branch
   s = s.replace(/@[0-9][^/]*$/, '');               // 尾部 @version
+  s = s.replace(/^@([^/]+)\//, '$1-');             // @scope/name → scope-name
   s = s.split('/').pop().replace(/\.git$/, '').replace(/\.tgz$/i, '');
   return s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
-/** 去重主键：npm 包名优先，否则 url 里的 repo 名。 */
+/** 去重主键：npm 包名优先，否则 owner/repo（同名不同作者的仓库是不同插件）。 */
 function dedupeKey(entry) {
   if (entry.npm) return String(entry.npm).toLowerCase();
   const m = /github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?=[/#?]|$)/i.exec(entry.url || '');
@@ -592,9 +595,17 @@ function resolvePackageSubdir(rootDir, pathSpec) {
 ```js
 // ── 主流程 ────────────────────────────────────────────────────────────
 
+/** 从完整 install 命令提取安装 spec（'dsh plugin --profile web add <spec>' → '<spec>'）。 */
+function specOfInstall(install) {
+  let s = String(install || '').trim();
+  s = s.replace(/^dsh plugin --profile \S+ \S+\s+/, '');
+  return s.replace(/^["']|["']$/g, '').trim();
+}
+
 /** 镜像一个条目：probe → 物化 → 打包 → manifest 项。失败记 report。 */
 async function mirrorOne(entry, ctx) {
-  const slug = slugOf(entry.install || entry.npm || entry.url || entry.name);
+  const spec = specOfInstall(entry.install) || entry.npm || entry.url || entry.name;
+  const slug = slugOf(spec);
   const probed = await probeEntry(entry, ctx);
   if (!probed.ok) return { slug, entry, ok: false, stage: 'probe', error: probed.error };
 
@@ -649,7 +660,7 @@ async function mirrorOne(entry, ctx) {
     ctx.manifest.entries[slug] = {
       name: pkg.name || entry.name || slug,
       version: pkg.version || probed.version || '',
-      source: entry.install || '',
+      source: spec,
       category: entry.category || '',
       desc: desc.zh || desc.en || '',
       stars: entry.stars || null,
@@ -839,12 +850,13 @@ export function loadMarketManifest() {
   } catch { return null; }
 }
 
-/** install 源 → slug（与构建侧 slugOf 同规则，双端一致）。 */
+/** install 源 → slug（与构建侧 slugOf 同规则，双端一致；@scope/name → scope-name）。 */
 export function slugFromSource(source) {
   let s = String(source || '').trim();
   s = s.replace(/^(github|gitlab|bitbucket|link|file|npm):/, '');
   s = s.replace(/#.*$/, '');
   s = s.replace(/@[0-9][^/]*$/, '');
+  s = s.replace(/^@([^/]+)\//, '$1-');
   s = s.split('/').pop().replace(/\.git$/, '').replace(/\.tgz$/i, '');
   return s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
 }
