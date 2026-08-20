@@ -29,7 +29,7 @@ function slugOf(source) {
   let s = String(source || '').trim();
   s = s.replace(/^(github|gitlab|bitbucket|link|file|npm):/, '');
   s = s.replace(/#.*$/, '');                       // #path:/... 或 #branch
-  s = s.replace(/@[0-9][^/]*$/, '');               // 尾部 @version
+  s = s.replace(/@v?[0-9][^/]*$/, '');             // 尾部 @version（支持 @1.2.3 / @v1.2.3）
   s = s.replace(/^@([^/]+)\//, '$1-');             // @scope/name → scope-name
   s = s.split('/').pop().replace(/\.git$/, '').replace(/\.tgz$/i, '');
   return s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -39,20 +39,36 @@ function slugOf(source) {
 function dedupeKey(entry) {
   if (entry.npm) return String(entry.npm).toLowerCase();
   const m = /github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?=[/#?]|$)/i.exec(entry.url || '');
-  return m ? m[1].toLowerCase() : String(entry.name || entry.url || '').toLowerCase();
+  return m ? m[1].toLowerCase() : (String(entry.name || entry.url || '').toLowerCase() || 'none');
 }
 
-/** 清理：去重（同 key 保留第一条）+ experimental 打标。 */
+/** 从完整 install 命令提取安装 spec（'dsh plugin --profile web add <spec>' → '<spec>'）。 */
+function specOfInstall(install) {
+  let s = String(install || '').trim();
+  s = s.replace(/^dsh plugin --profile \S+ \S+\s+/, '');
+  return s.replace(/^["']|["']$/g, '').trim();
+}
+
+/** 清理：去重（同 key 保留第一条）+ slug 冲突剔除 + experimental 打标。 */
 function cleanCatalog(entries) {
   const seen = new Map();
+  const slugSeen = new Set();
   const kept = [];
   const dropped = [];
   for (const e of entries) {
     const key = dedupeKey(e);
     if (seen.has(key)) { dropped.push({ name: e.name || key, reason: 'duplicate' }); continue; }
     seen.set(key, true);
-    const desc = [e.description && e.description.zh, e.description && e.description.en].filter(Boolean).join(' ');
-    kept.push(Object.assign({}, e, { experimental: EXPERIMENTAL_RE.test(desc) }));
+    const desc = typeof e.description === 'string'
+      ? e.description
+      : [e.description && e.description.zh, e.description && e.description.en].filter(Boolean).join(' ');
+    const cleaned = Object.assign({}, e, { experimental: EXPERIMENTAL_RE.test(desc) });
+    // 同名不同作者的仓库 slug 相同（如两个 dsh-stock-watch）→ 保留第一个，
+    // 第二个记 slug-collision（manifest/tgz 主键防覆盖；仍可在线安装兜底）。
+    const slug = slugOf(specOfInstall(e.install) || e.npm || e.url || e.name);
+    if (slugSeen.has(slug)) { dropped.push({ name: e.name || key, reason: 'slug-collision' }); continue; }
+    slugSeen.add(slug);
+    kept.push(cleaned);
   }
   return { kept, dropped };
 }
@@ -67,7 +83,7 @@ function parseArgs(argv) {
   return args;
 }
 
-module.exports = { CATALOG_URL, MARKET_DIR, EXPERIMENTAL_RE, slugOf, dedupeKey, cleanCatalog, parseArgs };
+module.exports = { CATALOG_URL, MARKET_DIR, EXPERIMENTAL_RE, slugOf, dedupeKey, specOfInstall, cleanCatalog, parseArgs };
 
 if (require.main === module) {
   console.log('mirror-market: 骨架就绪（完整流程见后续任务）');

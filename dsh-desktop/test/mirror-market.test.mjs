@@ -47,3 +47,17 @@ test('parseArgs: --limit 与 --only', () => {
   assert.deepEqual(parseArgs(['--only', 'npm', '--limit', '5']), { limit: 5, only: 'npm' })
   assert.deepEqual(parseArgs([]), { limit: Infinity, only: null })
 })
+
+test('cleanCatalog: 描述为纯字符串也参与 experimental 判定', () => {
+  const { kept } = cleanCatalog([{ npm: 'x', url: 'https://github.com/a/x', description: 'NSFW plugin' }])
+  assert.equal(kept[0].experimental, true)
+})
+
+test('cleanCatalog: 同名不同作者仓库 slug 冲突 → 保留第一个，第二个记 slug-collision', () => {
+  const a = { npm: null, url: 'https://github.com/Awu12277/dsh-stock-watch', install: 'dsh plugin --profile web add github:Awu12277/dsh-stock-watch' }
+  const b = { npm: null, url: 'https://github.com/Bob-Bo1/dsh-stock-watch', install: 'dsh plugin --profile web add github:Bob-Bo1/dsh-stock-watch' }
+  const { kept, dropped } = cleanCatalog([a, b])
+  assert.equal(kept.length, 1)
+  assert.equal(dropped.length, 1)
+  assert.equal(dropped[0].reason, 'slug-collision')
+})
