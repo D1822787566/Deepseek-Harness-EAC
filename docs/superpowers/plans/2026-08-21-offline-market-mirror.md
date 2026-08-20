@@ -259,7 +259,7 @@ if (require.main === module) {
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `node --test test/mirror-market.test.mjs`
-Expected: PASS（5 个用例）
+Expected: PASS（7 个用例）
 
 - [ ] **Step 5: Commit**
 
@@ -597,6 +597,44 @@ test('resolvePackageSubdir: github #path: 子包解析', async () => {
   assert.equal(resolvePackageSubdir(root, null), root)
   rmSync(root, { recursive: true, force: true })
 })
+
+test('resolvePackageSubdir: #path:/../ 越界 → null', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mirror-esc-'))
+  assert.equal(resolvePackageSubdir(root, '/../outside'), null)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('mirrorOne: tarball 源（带顶层目录）→ 顶层检测 + manifest 条目（fetch stub，零网络）', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => { globalThis.fetch = original })
+  const fs2 = await import('node:fs')
+  const archiver = (await import('archiver')).default
+  const src = makePluginDir()
+  const tgz = join(tmpdir(), `fixture-${Date.now()}.tgz`)
+  // 构造 GitHub release 资产形态：owner-repo-<sha>/ 顶层目录
+  await new Promise((resolve, reject) => {
+    const out = fs2.createWriteStream(tgz)
+    const a = archiver('tar', { gzip: true })
+    a.on('error', reject); out.on('close', resolve)
+    a.pipe(out); a.directory(src, 'owner-repo-sha/'); a.finalize()
+  })
+  const buf = fs2.readFileSync(tgz)
+  globalThis.fetch = async (url, opts) => {
+    if (opts && opts.method === 'HEAD') return { ok: true, headers: { get: () => String(buf.length) } }
+    return { ok: true, headers: { get: () => null }, arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) }
+  }
+  const cacheDir = mkdtempSync(join(tmpdir(), 'mirror-cache-'))
+  const manifest = { updated: 'x', source: 'test', entries: {} }
+  const entry = { name: 'tarball-fixture', install: null, tarball: 'https://example.com/dl.tgz', description: {} }
+  const r = await mirrorOne(entry, { cacheDir, manifest, npmRegistry: 'https://registry.npmjs.org' })
+  assert.equal(r.ok, true)
+  assert.equal(r.stage, 'mirrored')
+  assert.equal(manifest.entries['tarball-fixture'].name, 'fixture-plugin')
+  assert.ok(fs2.existsSync(join(cacheDir, 'tarball-fixture.tgz')))
+  rmSync(src, { recursive: true, force: true })
+  rmSync(cacheDir, { recursive: true, force: true })
+  rmSync(tgz, { force: true })
+})
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -644,11 +682,13 @@ function writeManifest(manifest, dest) {
   fs.writeFileSync(dest, JSON.stringify({ updated: manifest.updated, source: manifest.source, entries: sorted }, null, 1) + '\n');
 }
 
-/** github #path:/x/y 子包：返回根下对应目录。 */
+/** github #path:/x/y 子包：返回根下对应目录（含 .. 越界守卫）。 */
 function resolvePackageSubdir(rootDir, pathSpec) {
   if (!pathSpec) return rootDir;
   const clean = String(pathSpec).replace(/^\/+|\/+$/g, '');
   const p = join(rootDir, ...clean.split('/'));
+  const rel = path.relative(rootDir, p);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null; // 防 #path:/../ 逃逸
   return fs.existsSync(join(p, 'package.json')) ? p : null;
 }
 ```
@@ -693,9 +733,11 @@ async function mirrorOne(entry, ctx) {
       pkgRoot = top ? resolvePackageSubdir(top, pathSpec && pathSpec[1]) : null;
     } else if (probed.source === 'tarball') {
       const tar = join(work, 'dl.tgz');
-      await download(entry.tarball, tar);
+      await download(entry.tarball, tar, { timeoutMs: 120 * 1000 });
       extractTgz(tar, join(work, 'pkg'));
-      pkgRoot = join(work, 'pkg');
+      // GitHub release 资产带 owner-repo-<sha>/ 顶层目录 → 与 npm/github 分支同款顶层检测
+      const top = fs.readdirSync(join(work, 'pkg')).map((n) => join(work, 'pkg', n)).find((p) => fs.statSync(p).isDirectory());
+      pkgRoot = top || join(work, 'pkg');
     }
     if (!pkgRoot || !fs.existsSync(join(pkgRoot, 'package.json'))) {
       return { slug, entry, ok: false, stage: 'materialize', error: 'no package.json after materialize' };
@@ -722,7 +764,7 @@ async function mirrorOne(entry, ctx) {
       source: spec,
       category: entry.category || '',
       desc: desc.zh || desc.en || '',
-      stars: entry.stars || null,
+      stars: entry.stars ?? null,
       experimental: entry.experimental === true,
       sha256: sha,
       sizeBytes,
@@ -749,9 +791,9 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
-/** 拉取目录。 */
+/** 拉取目录（30s 超时，防挂死整轮）。 */
 async function fetchCatalog(url) {
-  const res = await fetch(url, { redirect: 'follow' });
+  const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(30000) });
   if (!res.ok) throw new Error(`catalog ${res.status}`);
   const j = await res.json();
   return Array.isArray(j) ? j : (j.plugins || j.list || []);
@@ -766,7 +808,10 @@ async function main(argv) {
   const target = filtered.slice(0, args.limit);
 
   fs.mkdirSync(MARKET_DIR, { recursive: true });
-  const manifest = { updated: new Date().toISOString().slice(0, 10), source: CATALOG_URL, entries: {} };
+  // 断点续跑：水合上一轮 manifest（畸形/缺 entries 一律回退空表；陈旧条目保留 = 已缓存插件仍可离线装）。
+  let prev = null;
+  try { prev = JSON.parse(fs.readFileSync(join(MARKET_DIR, 'manifest.json'), 'utf8')); } catch {}
+  const manifest = { updated: new Date().toISOString().slice(0, 10), source: CATALOG_URL, entries: Object.assign({}, (prev && prev.entries) || {}) };
   const results = await mapLimit(target, CONCURRENCY, (e) => mirrorOne(e, { cacheDir: MARKET_DIR, manifest, npmRegistry: 'https://registry.npmjs.org' }));
   const failed = results.filter((r) => !r.ok);
   writeManifest(manifest, join(MARKET_DIR, 'manifest.json'));
