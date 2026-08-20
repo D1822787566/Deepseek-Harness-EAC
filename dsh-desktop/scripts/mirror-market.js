@@ -83,33 +83,39 @@ function parseArgs(argv) {
   return args;
 }
 
-/** 判断目录条目的三源类型与可达性，返回 { ok, source, version?, error? }。 */
-async function probeEntry(entry, { npmRegistry = 'https://registry.npmjs.org' } = {}) {
-  const install = String(entry.install || '');
+/** 判断目录条目的三源类型与可达性，返回 { ok, source, version?, error? }。
+ *  每次 fetch 带 AbortSignal.timeout 超时（设计要求「404/超时剔除」）；
+ *  catch 保留分支 source 标签，report.json 不误标。 */
+async function probeEntry(entry, { npmRegistry = 'https://registry.npmjs.org', timeoutMs = 10000 } = {}) {
+  let src = 'unknown';
   try {
-    if (entry.npm) {
+    const install = String((entry && entry.install) || '');
+    if (entry && entry.npm) {
+      src = 'npm';
       const url = `${npmRegistry}/${encodeURIComponent(entry.npm)}`;
-      const res = await fetch(url, { headers: { accept: 'application/vnd.npm.install-v1+json' } });
-      if (!res.ok) return { ok: false, source: 'npm', error: `npm registry ${res.status}` };
+      const res = await fetch(url, { headers: { accept: 'application/vnd.npm.install-v1+json' }, signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok) return { ok: false, source: src, error: `npm registry ${res.status}` };
       const j = await res.json();
       const version = j['dist-tags'] && j['dist-tags'].latest;
-      return version ? { ok: true, source: 'npm', version } : { ok: false, source: 'npm', error: 'no dist-tags.latest' };
+      return version ? { ok: true, source: src, version } : { ok: false, source: src, error: 'no dist-tags.latest' };
     }
-    if (entry.tarball) {
-      const res = await fetch(entry.tarball, { method: 'HEAD', redirect: 'follow' });
+    if (entry && entry.tarball) {
+      src = 'tarball';
+      const res = await fetch(entry.tarball, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(timeoutMs) });
       const size = Number(res.headers.get('content-length') || 0);
-      return res.ok ? { ok: true, source: 'tarball', sizeBytes: size } : { ok: false, source: 'tarball', error: `HEAD ${res.status}` };
+      return res.ok ? { ok: true, source: src, sizeBytes: size } : { ok: false, source: src, error: `HEAD ${res.status}` };
     }
-    if (/^github:|github\.com\//.test(install) || /github\.com\//.test(entry.url || '')) {
-      const m = /github\.com[\/:]([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?(?=[/#?]|$)/.exec(install + ' ' + (entry.url || ''));
-      if (!m) return { ok: false, source: 'github', error: 'no owner/repo' };
+    if (entry && (/^github:|github\.com\//i.test(install) || /github\.com\//i.test(entry.url || ''))) {
+      src = 'github';
+      const m = /github\.com[\/:]([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?(?=[/#?]|$)/i.exec(install + ' ' + (entry.url || ''));
+      if (!m) return { ok: false, source: src, error: 'no owner/repo' };
       const url = `https://codeload.github.com/${m[1]}/tar.gz/HEAD`;
-      const res = await fetch(url, { method: 'HEAD', redirect: 'follow' });
-      return res.ok ? { ok: true, source: 'github', repo: m[1] } : { ok: false, source: 'github', error: `codeload HEAD ${res.status}` };
+      const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(timeoutMs) });
+      return res.ok ? { ok: true, source: src, repo: m[1] } : { ok: false, source: src, error: `codeload HEAD ${res.status}` };
     }
-    return { ok: false, source: 'unknown', error: 'no install command' };
+    return { ok: false, source: src, error: 'no install command' };
   } catch (err) {
-    return { ok: false, source: 'unknown', error: String((err && err.message) || err) };
+    return { ok: false, source: src, error: String((err && err.message) || err) };
   }
 }
 

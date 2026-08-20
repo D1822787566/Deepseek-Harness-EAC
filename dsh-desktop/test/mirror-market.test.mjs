@@ -62,7 +62,9 @@ test('cleanCatalog: 同名不同作者仓库 slug 冲突 → 保留第一个，�
   assert.equal(dropped[0].reason, 'slug-collision')
 })
 
-test('probeEntry: npm 源从 registry 拿版本（fetch stub）', async () => {
+test('probeEntry: npm 源从 registry 拿版本（fetch stub）', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => { globalThis.fetch = original })
   const calls = []
   globalThis.fetch = async (url, opts) => {
     calls.push(url)
@@ -74,7 +76,19 @@ test('probeEntry: npm 源从 registry 拿版本（fetch stub）', async () => {
   assert.ok(calls[0].includes('registry.npmjs.org'))
 })
 
-test('probeEntry: github 源 codeload HEAD 404 → 死链', async () => {
+test('probeEntry: tarball 源 HEAD 取体积', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => { globalThis.fetch = original })
+  globalThis.fetch = async (url, opts) => ({ ok: true, headers: { get: () => '12345' } })
+  const r = await probeEntry({ tarball: 'https://example.com/x.tgz' })
+  assert.equal(r.ok, true)
+  assert.equal(r.source, 'tarball')
+  assert.equal(r.sizeBytes, 12345)
+})
+
+test('probeEntry: github 源 codeload HEAD 404 → 死链', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => { globalThis.fetch = original })
   globalThis.fetch = async (url, opts) => {
     if (opts && opts.method === 'HEAD') return { ok: false, status: 404 }
     return { ok: false, status: 404 }
@@ -84,7 +98,9 @@ test('probeEntry: github 源 codeload HEAD 404 → 死链', async () => {
   assert.match(r.error || '', /404|HEAD/i)
 })
 
-test('probeEntry: 无 install 命令 → 不可装', async () => {
-  const r = await probeEntry({ url: 'https://github.com/a/b', install: null })
+test('probeEntry: 无任何源信号 → unknown / no install command', async () => {
+  const r = await probeEntry({ name: 'x', install: null })
   assert.equal(r.ok, false)
+  assert.equal(r.source, 'unknown')
+  assert.equal(r.error, 'no install command')
 })
