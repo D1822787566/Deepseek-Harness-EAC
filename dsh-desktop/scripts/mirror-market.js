@@ -229,11 +229,13 @@ function writeManifest(manifest, dest) {
   fs.writeFileSync(dest, JSON.stringify({ updated: manifest.updated, source: manifest.source, entries: sorted }, null, 1) + '\n');
 }
 
-/** github #path:/x/y 子包：返回根下对应目录。 */
+/** github #path:/x/y 子包：返回根下对应目录（含 .. 越界守卫）。 */
 function resolvePackageSubdir(rootDir, pathSpec) {
   if (!pathSpec) return rootDir;
   const clean = String(pathSpec).replace(/^\/+|\/+$/g, '');
   const p = join(rootDir, ...clean.split('/'));
+  const rel = path.relative(rootDir, p);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null; // 防 #path:/../ 逃逸
   return fs.existsSync(join(p, 'package.json')) ? p : null;
 }
 
@@ -277,7 +279,9 @@ async function mirrorOne(entry, ctx) {
       const tar = join(work, 'dl.tgz');
       await download(entry.tarball, tar, { timeoutMs: 120 * 1000 });
       extractTgz(tar, join(work, 'pkg'));
-      pkgRoot = join(work, 'pkg');
+      // GitHub release 资产带 owner-repo-<sha>/ 顶层目录 → 与 npm/github 分支同款顶层检测
+      const top = fs.readdirSync(join(work, 'pkg')).map((n) => join(work, 'pkg', n)).find((p) => fs.statSync(p).isDirectory());
+      pkgRoot = top || join(work, 'pkg');
     }
     if (!pkgRoot || !fs.existsSync(join(pkgRoot, 'package.json'))) {
       return { slug, entry, ok: false, stage: 'materialize', error: 'no package.json after materialize' };
@@ -304,7 +308,7 @@ async function mirrorOne(entry, ctx) {
       source: spec,
       category: entry.category || '',
       desc: desc.zh || desc.en || '',
-      stars: entry.stars || null,
+      stars: entry.stars ?? null,
       experimental: entry.experimental === true,
       sha256: sha,
       sizeBytes,
@@ -331,9 +335,9 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
-/** 拉取目录。 */
+/** 拉取目录（30s 超时，防挂死整轮）。 */
 async function fetchCatalog(url) {
-  const res = await fetch(url, { redirect: 'follow' });
+  const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(30000) });
   if (!res.ok) throw new Error(`catalog ${res.status}`);
   const j = await res.json();
   return Array.isArray(j) ? j : (j.plugins || j.list || []);
@@ -349,13 +353,9 @@ async function main(argv) {
 
   fs.mkdirSync(MARKET_DIR, { recursive: true });
   // 断点续跑：加载上次 manifest.json（sha256 命中的条目在 mirrorOne 内跳过重下）。
-  let manifest = { updated: new Date().toISOString().slice(0, 10), source: CATALOG_URL, entries: {} };
-  const prev = join(MARKET_DIR, 'manifest.json');
-  if (fs.existsSync(prev)) {
-    try { manifest = Object.assign(manifest, JSON.parse(fs.readFileSync(prev, 'utf8'))); } catch { /* 损坏则全量重跑 */ }
-    manifest.updated = new Date().toISOString().slice(0, 10);
-    manifest.source = CATALOG_URL;
-  }
+  let prev = null;
+  try { prev = JSON.parse(fs.readFileSync(join(MARKET_DIR, 'manifest.json'), 'utf8')); } catch {}
+  const manifest = { updated: new Date().toISOString().slice(0, 10), source: CATALOG_URL, entries: Object.assign({}, (prev && prev.entries) || {}) };
   const results = await mapLimit(target, CONCURRENCY, (e) => mirrorOne(e, { cacheDir: MARKET_DIR, manifest, npmRegistry: 'https://registry.npmjs.org' }));
   const failed = results.filter((r) => !r.ok);
   writeManifest(manifest, join(MARKET_DIR, 'manifest.json'));

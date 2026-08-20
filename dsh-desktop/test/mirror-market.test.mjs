@@ -7,7 +7,7 @@ import {
   slugOf, dedupeKey, cleanCatalog, parseArgs, probeEntry,
   materializeLocalDir, installClosure, rebuildAllowlisted,
 } from '../scripts/mirror-market.js'
-import { packTgz, writeManifest, sha256File, resolvePackageSubdir } from '../scripts/mirror-market.js'
+import { packTgz, writeManifest, sha256File, resolvePackageSubdir, mirrorOne } from '../scripts/mirror-market.js'
 
 test('slugOf: 归一化各种 install 源', () => {
   assert.equal(slugOf('github:owner/dsh-pet'), 'dsh-pet')
@@ -177,4 +177,42 @@ test('resolvePackageSubdir: github #path: 子包解析', async () => {
   assert.equal(resolvePackageSubdir(root, '/packages/console'), sub)
   assert.equal(resolvePackageSubdir(root, null), root)
   rmSync(root, { recursive: true, force: true })
+})
+
+test('resolvePackageSubdir: #path:/../ 越界 → null', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mirror-esc-'))
+  assert.equal(resolvePackageSubdir(root, '/../outside'), null)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('mirrorOne: tarball 源（带顶层目录）→ 顶层检测 + manifest 条目（fetch stub，零网络）', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => { globalThis.fetch = original })
+  const fs2 = await import('node:fs')
+  const archiver = (await import('archiver')).default
+  const src = makePluginDir()
+  const tgz = join(tmpdir(), `fixture-${Date.now()}.tgz`)
+  // 构造 GitHub release 资产形态：owner-repo-<sha>/ 顶层目录
+  await new Promise((resolve, reject) => {
+    const out = fs2.createWriteStream(tgz)
+    const a = archiver('tar', { gzip: true })
+    a.on('error', reject); out.on('close', resolve)
+    a.pipe(out); a.directory(src, 'owner-repo-sha/'); a.finalize()
+  })
+  const buf = fs2.readFileSync(tgz)
+  globalThis.fetch = async (url, opts) => {
+    if (opts && opts.method === 'HEAD') return { ok: true, headers: { get: () => String(buf.length) } }
+    return { ok: true, headers: { get: () => null }, arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) }
+  }
+  const cacheDir = mkdtempSync(join(tmpdir(), 'mirror-cache-'))
+  const manifest = { updated: 'x', source: 'test', entries: {} }
+  const entry = { name: 'tarball-fixture', install: null, tarball: 'https://example.com/dl.tgz', description: {} }
+  const r = await mirrorOne(entry, { cacheDir, manifest, npmRegistry: 'https://registry.npmjs.org' })
+  assert.equal(r.ok, true)
+  assert.equal(r.stage, 'mirrored')
+  assert.equal(manifest.entries['tarball-fixture'].name, 'fixture-plugin')
+  assert.ok(fs2.existsSync(join(cacheDir, 'tarball-fixture.tgz')))
+  rmSync(src, { recursive: true, force: true })
+  rmSync(cacheDir, { recursive: true, force: true })
+  rmSync(tgz, { force: true })
 })
