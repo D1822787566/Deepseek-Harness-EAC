@@ -18,7 +18,9 @@
     "fetch-npm": "node scripts/fetch-npm.js",
     "fetch-runtime": "node scripts/fetch-node.js && node scripts/fetch-npm.js",
     "electron:fetch": "node node_modules/electron/install.js",
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test \"test/*.test.mjs\"",
+    "mirror-market": "node scripts/mirror-market.js",
+    "mirror-market:sample": "node scripts/mirror-market.js --limit 20"
   },
   "dependencies": {
     "@deepseek-ai/cordis-plugin-group": "1.0.1",
