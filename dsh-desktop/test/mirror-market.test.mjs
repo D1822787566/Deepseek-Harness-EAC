@@ -126,15 +126,16 @@ test('materializeLocalDir: 保留插件包结构并返回包根', async () => {
   rmSync(dest, { recursive: true, force: true })
 })
 
-test('installClosure: 空依赖插件零网络可完成（npm install 静默失败不阻断）', async () => {
+test('installClosure: 不存在的 npm 二进制 → 确定性失败路径（零网络）', async () => {
   const dir = makePluginDir()
-  const r = await installClosure(dir, { npmCmd: 'npm' })
-  // 不联网时 npm install 可能失败——允许失败但必须返回对象且不抛异常
-  assert.equal(typeof r, 'object')
+  const r = await installClosure(dir, { npmCmd: 'definitely-not-a-real-npm-binary-xyz' })
+  assert.equal(r.installed, false)
+  assert.ok(Array.isArray(r.rebuilt))
+  assert.equal(r.rebuilt.length, 0)
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('rebuildAllowlisted: 只对白名单内的包返回 rebuild 列表', () => {
-  const names = rebuildAllowlisted(['sharp', 'left-pad', 'node-pty', 'koffi', 'tiny'])
+test('rebuildAllowlisted: 只对白名单内的包返回 rebuild 列表（scope 同名不放过）', () => {
+  const names = rebuildAllowlisted(['sharp', 'left-pad', 'node-pty', 'koffi', 'tiny', '@evil/sharp'])
   assert.deepEqual(names.sort(), ['koffi', 'node-pty', 'sharp'])
 })

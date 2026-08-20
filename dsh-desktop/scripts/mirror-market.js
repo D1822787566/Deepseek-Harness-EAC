@@ -17,7 +17,9 @@
 // NATIVE_ALLOWLIST 中的已知原生包事后 npm rebuild 放行构建脚本。
 
 const path = require('node:path');
-const { join } = require('node:path');
+const { join } = path;
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
 
 const CATALOG_URL = 'https://awesome-dsh-plugin.com/plugins.json';
 const MARKET_DIR = path.resolve(__dirname, '..', 'assets', 'market-cache');
@@ -120,25 +122,24 @@ async function probeEntry(entry, { npmRegistry = 'https://registry.npmjs.org', t
   }
 }
 
-const fs = require('node:fs');
-const { spawnSync } = require('node:child_process');
-
-// 已知原生包白名单：仅这些包允许事后 npm rebuild 放行构建脚本。
+// 精确匹配包名（不做 scope 剥离）——@evil/sharp 之类的同名作用域包绝不放行。
 const NATIVE_ALLOWLIST = new Set(['sharp', 'node-pty', 'koffi', 'prebuild-install']);
 
 const npmCmd = () => (process.platform === 'win32' ? 'npm.cmd' : 'npm');
 
 /** 执行 npm：Windows 无法直接 spawn .cmd（ENOENT/EINVAL），走 cmd.exe /c；
  *  POSIX 直接 spawn。避免 shell:true + args（Node ≥22 弃用 DEP0190，参数不转义）。 */
-function spawnNpm(cmd, args, opts) {
-  if (process.platform !== 'win32') return spawnSync(cmd, args, opts);
-  const line = [cmd, ...args].map((a) => (/\s/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)).join(' ');
-  return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', line], opts);
+function spawnNpm(args, { cwd, timeoutMs, cmd = npmCmd() } = {}) {
+  if (process.platform === 'win32') {
+    const quoted = args.map((a) => (/[\s"]/.test(a) ? '"' + a.replace(/"/g, '\\"') + '"' : a)).join(' ');
+    return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `${cmd} ${quoted}`], { cwd, stdio: 'pipe', encoding: 'utf8', timeout: timeoutMs });
+  }
+  return spawnSync(cmd, args, { cwd, stdio: 'pipe', encoding: 'utf8', timeout: timeoutMs });
 }
 
 /** 下载 url 到 dest 文件（重定向跟随 + 超时）。 */
-async function download(url, dest) {
-  const res = await fetch(url, { redirect: 'follow' });
+async function download(url, dest, { timeoutMs = 10000 } = {}) {
+  const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`download ${res.status}: ${url}`);
   const buf = Buffer.from(await res.arrayBuffer());
   fs.writeFileSync(dest, buf);
@@ -149,7 +150,7 @@ async function download(url, dest) {
 function extractTgz(tgz, dest) {
   fs.mkdirSync(dest, { recursive: true });
   const r = spawnSync('tar', ['-xzf', tgz, '-C', dest], { stdio: 'pipe', encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`tar 解包失败: ${(r.stderr || r.stdout || '').slice(0, 300)}`);
+  if (r.status !== 0) throw new Error(`tar 解包失败: ${(r.error && r.error.message || (r.stderr || r.stdout || '')).slice(0, 300)}`);
 }
 
 /** 本地目录 → 目标目录（fs.cpSync，保留符号链接默认语义）。 */
@@ -159,11 +160,9 @@ async function materializeLocalDir(srcDir, destDir) {
   return destDir;
 }
 
-/** 物化依赖闭包：npm install --ignore-scripts，仅白名单包事后 rebuild。 */
+/** 物化依赖闭包：npm install --ignore-scripts；返回 { installed, rebuilt }（rebuilt=待 rebuild 白名单候选）。 */
 async function installClosure(pkgDir, { npmCmd: cmd = npmCmd() } = {}) {
-  const install = spawnNpm(cmd, ['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], {
-    cwd: pkgDir, stdio: 'pipe', encoding: 'utf8', timeout: 10 * 60 * 1000,
-  });
+  const install = spawnNpm(['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: pkgDir, cmd, timeoutMs: 10 * 60 * 1000 });
   const installed = install.status === 0;
   let rebuilt = [];
   if (installed) rebuilt = rebuildAllowlisted(listDeps(pkgDir));
@@ -178,15 +177,15 @@ function listDeps(pkgDir) {
   } catch { return []; }
 }
 
-/** 白名单交集 → 需要 rebuild 的包名列表。 */
+/** 白名单交集 → 需要 rebuild 的包名列表（精确匹配，scope 同名不放过）。 */
 function rebuildAllowlisted(depNames) {
-  return [...new Set(depNames)].filter((n) => NATIVE_ALLOWLIST.has(n.replace(/^@[^/]+\//, '')));
+  return [...new Set(depNames)].filter((n) => NATIVE_ALLOWLIST.has(n));
 }
 
 /** 对白名单原生包放行构建脚本（npm rebuild 只跑指定包）。 */
 function runRebuild(pkgDir, names, cmd = npmCmd()) {
   for (const n of names) {
-    spawnNpm(cmd, ['rebuild', n, '--foreground-scripts'], { cwd: pkgDir, stdio: 'pipe', encoding: 'utf8', timeout: 5 * 60 * 1000 });
+    spawnNpm(['rebuild', n, '--foreground-scripts'], { cwd: pkgDir, cmd, timeoutMs: 5 * 60 * 1000 });
   }
 }
 
