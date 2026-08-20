@@ -1,12 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   slugOf, dedupeKey, cleanCatalog, parseArgs, probeEntry,
   materializeLocalDir, installClosure, rebuildAllowlisted,
 } from '../scripts/mirror-market.js'
+import { packTgz, writeManifest, sha256File, resolvePackageSubdir } from '../scripts/mirror-market.js'
 
 test('slugOf: 归一化各种 install 源', () => {
   assert.equal(slugOf('github:owner/dsh-pet'), 'dsh-pet')
@@ -138,4 +139,42 @@ test('installClosure: 不存在的 npm 二进制 → 确定性失败路径（零
 test('rebuildAllowlisted: 只对白名单内的包返回 rebuild 列表（scope 同名不放过）', () => {
   const names = rebuildAllowlisted(['sharp', 'left-pad', 'node-pty', 'koffi', 'tiny', '@evil/sharp'])
   assert.deepEqual(names.sort(), ['koffi', 'node-pty', 'sharp'])
+})
+
+test('packTgz: archiver 产出合法 tgz 且含 package.json', async () => {
+  const src = makePluginDir()
+  const out = join(tmpdir(), `mirror-pack-${Date.now()}.tgz`)
+  const sha = await packTgz(src, out)
+  assert.match(sha, /^[0-9a-f]{64}$/)
+  const { spawnSync } = await import('node:child_process')
+  const list = spawnSync('tar', ['-tzf', out], { encoding: 'utf8' })
+  assert.match(list.stdout, /package\.json/)
+  rmSync(src, { recursive: true, force: true })
+  rmSync(out, { force: true })
+})
+
+test('sha256File: 空文件 sha256 已知值', async () => {
+  const f = join(tmpdir(), `sha-${Date.now()}.txt`)
+  writeFileSync(f, '')
+  assert.equal(await sha256File(f), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+  rmSync(f, { force: true })
+})
+
+test('writeManifest: 写读往返', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mirror-man-'))
+  const m = { updated: '2026-08-21', entries: { 'dsh-pet': { name: 'dsh-pet', sha256: 'abc', sizeBytes: 1 } } }
+  writeManifest(m, join(dir, 'manifest.json'))
+  const back = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'))
+  assert.equal(back.entries['dsh-pet'].sha256, 'abc')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('resolvePackageSubdir: github #path: 子包解析', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mirror-sub-'))
+  const sub = join(root, 'packages', 'console')
+  mkdirSync(sub, { recursive: true })
+  writeFileSync(join(sub, 'package.json'), '{}')
+  assert.equal(resolvePackageSubdir(root, '/packages/console'), sub)
+  assert.equal(resolvePackageSubdir(root, null), root)
+  rmSync(root, { recursive: true, force: true })
 })

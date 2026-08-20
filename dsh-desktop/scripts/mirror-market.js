@@ -20,6 +20,9 @@ const path = require('node:path');
 const { join } = path;
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
+const os = require('node:os');
+const { createHash } = require('node:crypto');
+const archiver = require('archiver');
 
 const CATALOG_URL = 'https://awesome-dsh-plugin.com/plugins.json';
 const MARKET_DIR = path.resolve(__dirname, '..', 'assets', 'market-cache');
@@ -194,8 +197,179 @@ function packageNameOf(pkgDir) {
   try { return JSON.parse(fs.readFileSync(join(pkgDir, 'package.json'), 'utf8')).name; } catch { return null; }
 }
 
-module.exports = { CATALOG_URL, MARKET_DIR, EXPERIMENTAL_RE, slugOf, dedupeKey, specOfInstall, cleanCatalog, probeEntry, parseArgs, download, extractTgz, materializeLocalDir, installClosure, listDeps, rebuildAllowlisted, runRebuild, packageNameOf, NATIVE_ALLOWLIST, npmCmd };
+/** 文件 sha256（流式）。 */
+async function sha256File(p) {
+  return new Promise((resolve, reject) => {
+    const h = createHash('sha256');
+    const s = fs.createReadStream(p);
+    s.on('data', (d) => h.update(d));
+    s.on('end', () => resolve(h.digest('hex')));
+    s.on('error', reject);
+  });
+}
+
+/** 目录 → 单文件 tgz（archiver），返回 sha256。 */
+async function packTgz(dir, outTgz) {
+  await new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(outTgz);
+    const a = archiver('tar', { gzip: true, gzipOptions: { level: 6 } });
+    a.on('error', reject);
+    out.on('close', resolve);
+    a.pipe(out);
+    a.directory(dir, false);
+    a.finalize();
+  });
+  return sha256File(outTgz);
+}
+
+/** manifest 写盘（排序键保证确定性）。 */
+function writeManifest(manifest, dest) {
+  const sorted = {};
+  for (const k of Object.keys(manifest.entries).sort()) sorted[k] = manifest.entries[k];
+  fs.writeFileSync(dest, JSON.stringify({ updated: manifest.updated, source: manifest.source, entries: sorted }, null, 1) + '\n');
+}
+
+/** github #path:/x/y 子包：返回根下对应目录。 */
+function resolvePackageSubdir(rootDir, pathSpec) {
+  if (!pathSpec) return rootDir;
+  const clean = String(pathSpec).replace(/^\/+|\/+$/g, '');
+  const p = join(rootDir, ...clean.split('/'));
+  return fs.existsSync(join(p, 'package.json')) ? p : null;
+}
+
+// ── 主流程 ────────────────────────────────────────────────────────────
+
+/** 镜像一个条目：probe → 物化 → 打包 → manifest 项。失败记 report。
+ *  specOfInstall 已在 Task 2 定义（勿重复）。 */
+async function mirrorOne(entry, ctx) {
+  const spec = specOfInstall(entry.install) || entry.npm || entry.url || entry.name;
+  const slug = slugOf(spec);
+  const probed = await probeEntry(entry, ctx);
+  if (!probed.ok) return { slug, entry, ok: false, stage: 'probe', error: probed.error };
+
+  const work = fs.mkdtempSync(join(os.tmpdir(), 'mirror-work-'));
+  try {
+    const tgzPath = join(ctx.cacheDir, slug + '.tgz');
+    // 断点续跑：已存在且 sha256 命中 manifest 则跳过。
+    if (fs.existsSync(tgzPath) && ctx.manifest.entries[slug] && await sha256File(tgzPath) === ctx.manifest.entries[slug].sha256) {
+      return { slug, entry, ok: true, stage: 'resume', version: ctx.manifest.entries[slug].version };
+    }
+
+    let pkgRoot = null;
+    if (probed.source === 'npm') {
+      const packed = join(work, 'pkg.tgz');
+      const pack = spawnNpm(['pack', `${entry.npm}@${probed.version}`, '--pack-destination', work], { cwd: work, cmd: npmCmd(), timeoutMs: 5 * 60 * 1000 });
+      if (pack.status !== 0) return { slug, entry, ok: false, stage: 'pack', error: (pack.stderr || pack.stdout || '').slice(0, 300) };
+      const name = (pack.stdout || '').trim().split(/\r?\n/).pop();
+      extractTgz(join(work, name), join(work, 'pkg'));
+      // npm pack tgz 顶层恒为 package/ 前缀 → 取其内容目录（与 github 顶层目录检测同理）。
+      const topPkg = fs.readdirSync(join(work, 'pkg')).map((n) => join(work, 'pkg', n)).find((p) => fs.statSync(p).isDirectory());
+      pkgRoot = topPkg || join(work, 'pkg');
+    } else if (probed.source === 'github') {
+      const tar = join(work, 'repo.tgz');
+      // codeload 整仓 tarball 可能超 10s（download 默认超时偏紧）→ 放宽到 120s。
+      await download(`https://codeload.github.com/${probed.repo}/tar.gz/HEAD`, tar, { timeoutMs: 120 * 1000 });
+      extractTgz(tar, join(work, 'repo'));
+      const top = fs.readdirSync(join(work, 'repo')).map((n) => join(work, 'repo', n)).find((p) => fs.statSync(p).isDirectory());
+      const pathSpec = /#path:(\/[^#]*)/.exec(entry.install || '');
+      pkgRoot = top ? resolvePackageSubdir(top, pathSpec && pathSpec[1]) : null;
+    } else if (probed.source === 'tarball') {
+      const tar = join(work, 'dl.tgz');
+      await download(entry.tarball, tar, { timeoutMs: 120 * 1000 });
+      extractTgz(tar, join(work, 'pkg'));
+      pkgRoot = join(work, 'pkg');
+    }
+    if (!pkgRoot || !fs.existsSync(join(pkgRoot, 'package.json'))) {
+      return { slug, entry, ok: false, stage: 'materialize', error: 'no package.json after materialize' };
+    }
+
+    const closure = await installClosure(pkgRoot, ctx);
+    if (closure.installed && closure.rebuilt.length) runRebuild(pkgRoot, closure.rebuilt);
+
+    const staged = join(work, 'stage');
+    const clean = join(work, 'clean');
+    fs.mkdirSync(staged, { recursive: true });
+    // 只保留包本体（去 .git/测试等杂项），闭包 node_modules 保留。
+    fs.cpSync(pkgRoot, clean, { recursive: true });
+    for (const junk of ['.git', '.github', 'test', 'tests', '__tests__', 'node_modules/.cache']) {
+      fs.rmSync(join(clean, junk), { recursive: true, force: true });
+    }
+    const pkg = JSON.parse(fs.readFileSync(join(clean, 'package.json'), 'utf8'));
+    const sha = await packTgz(clean, tgzPath);
+    const sizeBytes = fs.statSync(tgzPath).size;
+    const desc = entry.description || {};
+    ctx.manifest.entries[slug] = {
+      name: pkg.name || entry.name || slug,
+      version: pkg.version || probed.version || '',
+      source: spec,
+      category: entry.category || '',
+      desc: desc.zh || desc.en || '',
+      stars: entry.stars || null,
+      experimental: entry.experimental === true,
+      sha256: sha,
+      sizeBytes,
+    };
+    return { slug, entry, ok: true, stage: 'mirrored', version: pkg.version || probed.version || '', sizeBytes };
+  } catch (err) {
+    return { slug, entry, ok: false, stage: 'materialize', error: String((err && err.message) || err) };
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+}
+
+/** 并发执行器。 */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/** 拉取目录。 */
+async function fetchCatalog(url) {
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`catalog ${res.status}`);
+  const j = await res.json();
+  return Array.isArray(j) ? j : (j.plugins || j.list || []);
+}
+
+/** 主流程：拉取 → 清理 → probe → 并发镜像 → manifest/report。 */
+async function main(argv) {
+  const args = parseArgs(argv);
+  const entries = await fetchCatalog(CATALOG_URL);
+  const { kept, dropped } = cleanCatalog(entries);
+  const filtered = kept.filter((e) => !args.only || (args.only === 'npm' && e.npm) || (args.only === 'tarball' && e.tarball) || (args.only === 'github' && !e.npm && !e.tarball));
+  const target = filtered.slice(0, args.limit);
+
+  fs.mkdirSync(MARKET_DIR, { recursive: true });
+  // 断点续跑：加载上次 manifest.json（sha256 命中的条目在 mirrorOne 内跳过重下）。
+  let manifest = { updated: new Date().toISOString().slice(0, 10), source: CATALOG_URL, entries: {} };
+  const prev = join(MARKET_DIR, 'manifest.json');
+  if (fs.existsSync(prev)) {
+    try { manifest = Object.assign(manifest, JSON.parse(fs.readFileSync(prev, 'utf8'))); } catch { /* 损坏则全量重跑 */ }
+    manifest.updated = new Date().toISOString().slice(0, 10);
+    manifest.source = CATALOG_URL;
+  }
+  const results = await mapLimit(target, CONCURRENCY, (e) => mirrorOne(e, { cacheDir: MARKET_DIR, manifest, npmRegistry: 'https://registry.npmjs.org' }));
+  const failed = results.filter((r) => !r.ok);
+  writeManifest(manifest, join(MARKET_DIR, 'manifest.json'));
+  const stats = { count: results.filter((r) => r.ok).length, failed: failed.length, sizeBytes: Object.values(manifest.entries).reduce((s, e) => s + (e.sizeBytes || 0), 0) };
+  fs.writeFileSync(join(MARKET_DIR, 'report.json'), JSON.stringify({ updated: manifest.updated, catalogTotal: entries.length, kept: kept.length, dropped, failed, stats }, null, 1) + '\n');
+  console.log(`[mirror] catalog=${entries.length} kept=${kept.length} target=${target.length} ok=${stats.count} failed=${failed.length} size=${(stats.sizeBytes / 1048576).toFixed(0)}MB`);
+  for (const f of failed) console.log(`[mirror] FAIL ${f.slug} (${f.stage}): ${f.error}`);
+  process.exitCode = failed.length ? 1 : 0;
+}
+
+const CONCURRENCY = 8;
+
+module.exports = { CATALOG_URL, MARKET_DIR, EXPERIMENTAL_RE, slugOf, dedupeKey, specOfInstall, cleanCatalog, probeEntry, parseArgs, download, extractTgz, materializeLocalDir, installClosure, listDeps, rebuildAllowlisted, runRebuild, packageNameOf, NATIVE_ALLOWLIST, npmCmd, packTgz, sha256File, writeManifest, resolvePackageSubdir, mirrorOne, mapLimit, fetchCatalog, main, CONCURRENCY };
 
 if (require.main === module) {
-  console.log('mirror-market: 骨架就绪（完整流程见后续任务）');
+  main(process.argv.slice(2)).catch((err) => { console.error('[mirror] fatal:', err); process.exit(1); });
 }
