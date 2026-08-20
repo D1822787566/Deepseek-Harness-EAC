@@ -133,6 +133,20 @@ test('cleanCatalog: 描述含 NSFW/成人/电刺激关键词 → experimental', 
   assert.equal(kept[2].experimental, false)
 })
 
+test('cleanCatalog: 描述为纯字符串也参与 experimental 判定', () => {
+  const { kept } = cleanCatalog([{ npm: 'x', url: 'https://github.com/a/x', description: 'NSFW plugin' }])
+  assert.equal(kept[0].experimental, true)
+})
+
+test('cleanCatalog: 同名不同作者仓库 slug 冲突 → 保留第一个，第二个记 slug-collision', () => {
+  const a = { npm: null, url: 'https://github.com/Awu12277/dsh-stock-watch', install: 'dsh plugin --profile web add github:Awu12277/dsh-stock-watch' }
+  const b = { npm: null, url: 'https://github.com/Bob-Bo1/dsh-stock-watch', install: 'dsh plugin --profile web add github:Bob-Bo1/dsh-stock-watch' }
+  const { kept, dropped } = cleanCatalog([a, b])
+  assert.equal(kept.length, 1)
+  assert.equal(dropped.length, 1)
+  assert.equal(dropped[0].reason, 'slug-collision')
+})
+
 test('parseArgs: --limit 与 --only', () => {
   assert.deepEqual(parseArgs(['--limit', '20']), { limit: 20, only: null })
   assert.deepEqual(parseArgs(['--only', 'npm', '--limit', '5']), { limit: 5, only: 'npm' })
@@ -181,7 +195,7 @@ function slugOf(source) {
   let s = String(source || '').trim();
   s = s.replace(/^(github|gitlab|bitbucket|link|file|npm):/, '');
   s = s.replace(/#.*$/, '');                       // #path:/... 或 #branch
-  s = s.replace(/@[0-9][^/]*$/, '');               // 尾部 @version
+  s = s.replace(/@v?[0-9][^/]*$/, '');             // 尾部 @version（支持 @1.2.3 / @v1.2.3）
   s = s.replace(/^@([^/]+)\//, '$1-');             // @scope/name → scope-name
   s = s.split('/').pop().replace(/\.git$/, '').replace(/\.tgz$/i, '');
   return s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -191,20 +205,36 @@ function slugOf(source) {
 function dedupeKey(entry) {
   if (entry.npm) return String(entry.npm).toLowerCase();
   const m = /github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?=[/#?]|$)/i.exec(entry.url || '');
-  return m ? m[1].toLowerCase() : String(entry.name || entry.url || '').toLowerCase();
+  return m ? m[1].toLowerCase() : (String(entry.name || entry.url || '').toLowerCase() || 'none');
 }
 
-/** 清理：去重（同 key 保留第一条）+ experimental 打标。 */
+/** 从完整 install 命令提取安装 spec（'dsh plugin --profile web add <spec>' → '<spec>'）。 */
+function specOfInstall(install) {
+  let s = String(install || '').trim();
+  s = s.replace(/^dsh plugin --profile \S+ \S+\s+/, '');
+  return s.replace(/^["']|["']$/g, '').trim();
+}
+
+/** 清理：去重（同 key 保留第一条）+ slug 冲突剔除 + experimental 打标。 */
 function cleanCatalog(entries) {
   const seen = new Map();
+  const slugSeen = new Set();
   const kept = [];
   const dropped = [];
   for (const e of entries) {
     const key = dedupeKey(e);
     if (seen.has(key)) { dropped.push({ name: e.name || key, reason: 'duplicate' }); continue; }
     seen.set(key, true);
-    const desc = [e.description && e.description.zh, e.description && e.description.en].filter(Boolean).join(' ');
-    kept.push(Object.assign({}, e, { experimental: EXPERIMENTAL_RE.test(desc) }));
+    const desc = typeof e.description === 'string'
+      ? e.description
+      : [e.description && e.description.zh, e.description && e.description.en].filter(Boolean).join(' ');
+    const cleaned = Object.assign({}, e, { experimental: EXPERIMENTAL_RE.test(desc) });
+    // 同名不同作者的仓库 slug 相同（如两个 dsh-stock-watch）→ 保留第一个，
+    // 第二个记 slug-collision（manifest/tgz 主键防覆盖；仍可在线安装兜底）。
+    const slug = slugOf(specOfInstall(e.install) || e.npm || e.url || e.name);
+    if (slugSeen.has(slug)) { dropped.push({ name: e.name || key, reason: 'slug-collision' }); continue; }
+    slugSeen.add(slug);
+    kept.push(cleaned);
   }
   return { kept, dropped };
 }
@@ -219,7 +249,7 @@ function parseArgs(argv) {
   return args;
 }
 
-module.exports = { CATALOG_URL, MARKET_DIR, EXPERIMENTAL_RE, slugOf, dedupeKey, cleanCatalog, parseArgs };
+module.exports = { CATALOG_URL, MARKET_DIR, EXPERIMENTAL_RE, slugOf, dedupeKey, specOfInstall, cleanCatalog, parseArgs };
 
 if (require.main === module) {
   console.log('mirror-market: 骨架就绪（完整流程见后续任务）');
@@ -595,14 +625,8 @@ function resolvePackageSubdir(rootDir, pathSpec) {
 ```js
 // ── 主流程 ────────────────────────────────────────────────────────────
 
-/** 从完整 install 命令提取安装 spec（'dsh plugin --profile web add <spec>' → '<spec>'）。 */
-function specOfInstall(install) {
-  let s = String(install || '').trim();
-  s = s.replace(/^dsh plugin --profile \S+ \S+\s+/, '');
-  return s.replace(/^["']|["']$/g, '').trim();
-}
-
-/** 镜像一个条目：probe → 物化 → 打包 → manifest 项。失败记 report。 */
+/** 镜像一个条目：probe → 物化 → 打包 → manifest 项。失败记 report。
+ *  specOfInstall 已在 Task 2 定义（勿重复）。 */
 async function mirrorOne(entry, ctx) {
   const spec = specOfInstall(entry.install) || entry.npm || entry.url || entry.name;
   const slug = slugOf(spec);
@@ -855,7 +879,7 @@ export function slugFromSource(source) {
   let s = String(source || '').trim();
   s = s.replace(/^(github|gitlab|bitbucket|link|file|npm):/, '');
   s = s.replace(/#.*$/, '');
-  s = s.replace(/@[0-9][^/]*$/, '');
+  s = s.replace(/@v?[0-9][^/]*$/, '');
   s = s.replace(/^@([^/]+)\//, '$1-');
   s = s.split('/').pop().replace(/\.git$/, '').replace(/\.tgz$/i, '');
   return s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');

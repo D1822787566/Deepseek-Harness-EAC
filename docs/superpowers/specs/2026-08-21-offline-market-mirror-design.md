@@ -48,8 +48,9 @@
 
 **清理规则**（产出 `market-cache/manifest.json` 与 `market-cache/report.json`）：
 
-1. 去重：同名条目（如两个 `dsh-stock-watch`）、同 repo 多入口（monorepo
-   `#path:` 子包）按「npm 包名 > 直接子包 > repo 根」优先级保留一份。
+1. 去重：npm 同名条目、同 owner/repo 条目按「npm 包名 > 直接子包 > repo 根」优先级保留
+   一份；**同名但不同作者的仓库（如两个 dsh-stock-watch）视为不同插件**，slug
+   冲突时保留目录序第一个、第二个记 `slug-collision` 且仍可在线安装兜底。
 2. 探活：npm 源查 registry（dist-tags.latest 存在性）、GitHub 源 HEAD
    codeload tarball、直链 HEAD content-length；404/超时剔除，记入 report。
 3. 打 tag：描述含 NSFW/成人/硬件控制关键词 → `experimental: true`。
