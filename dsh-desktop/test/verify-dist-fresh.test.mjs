@@ -14,7 +14,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifyDistFresh } from '../scripts/verify-dist-fresh.js';
+import { createHash } from 'node:crypto';
+import { verifyDistFresh, verifyMarketCache } from '../scripts/verify-dist-fresh.js';
 
 const T0 = new Date('2026-08-15T12:00:00Z');
 const T1 = new Date('2026-08-15T13:00:00Z'); // artifact built
@@ -87,5 +88,45 @@ test('fails when no artifacts exist in dist/', () => {
     assert.ok(/no .*artifacts/i.test(r.error || ''), 'must report missing artifacts');
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- Task 8: verifyMarketCache（离线市场镜像完整性）----
+
+test('verifyMarketCache: manifest sha256 全匹配 → ok', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vdf-ok-'));
+  try {
+    const content = Buffer.from('pkg-data');
+    const sha = createHash('sha256').update(content).digest('hex');
+    writeFileSync(join(dir, 'dsh-a.tgz'), content);
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ entries: { 'dsh-a': { sha256: sha, name: 'dsh-a' } } }));
+    const r = verifyMarketCache(dir);
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('verifyMarketCache: 篡改 tgz → bad 列表', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vdf-bad-'));
+  try {
+    writeFileSync(join(dir, 'dsh-a.tgz'), 'tampered');
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ entries: { 'dsh-a': { sha256: 'f'.repeat(64), name: 'dsh-a' } } }));
+    const r = verifyMarketCache(dir);
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.bad, ['dsh-a']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('verifyMarketCache: 无 manifest → ok:false', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vdf-none-'));
+  try {
+    const r = verifyMarketCache(dir);
+    assert.equal(r.ok, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -63,18 +63,55 @@ function verifyDistFresh(repoRoot, distDir = path.join(repoRoot, 'dist')) {
   return { ok: offenders.length === 0, offenders, artifactTime };
 }
 
-module.exports = { verifyDistFresh };
+/** 校验离线市场镜像完整性：manifest 每条 sha256 与 tgz 实文件一致。 */
+function verifyMarketCache(cacheDir) {
+  const manifestFile = path.join(cacheDir, 'manifest.json');
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    const entries = manifest.entries || {};
+    const names = Object.keys(entries);
+    const bad = [];
+    const { createHash } = require('node:crypto');
+    const hashOf = (p) => {
+      const h = createHash('sha256');
+      h.update(fs.readFileSync(p));
+      return h.digest('hex');
+    };
+    for (const name of names) {
+      const tgz = path.join(cacheDir, name + '.tgz');
+      let actual = '';
+      try { actual = hashOf(tgz); } catch {}
+      if (actual !== entries[name].sha256) bad.push(name);
+    }
+    return { ok: bad.length === 0, count: names.length, bad };
+  } catch (err) {
+    return { ok: false, count: 0, bad: [], error: String((err && err.message) || err) };
+  }
+}
+
+module.exports = { verifyDistFresh, verifyMarketCache };
 
 if (require.main === module) {
   const repoRoot = process.argv[2] ? path.resolve(process.argv[2]) : path.resolve(__dirname, '..');
   const r = verifyDistFresh(repoRoot);
   if (r.ok) {
     console.log('verify-dist-fresh: OK — artifacts newer than every tracked source file');
-    process.exit(0);
+  } else {
+    console.error('verify-dist-fresh: STALE — ' + (r.error || `${r.offenders.length} source file(s) modified after the artifacts were built:`));
+    for (const o of r.offenders.slice(0, 40)) console.error('  ' + o);
+    if (r.offenders.length > 40) console.error(`  … and ${r.offenders.length - 40} more`);
+    console.error('Rebuild (npm run dist) before publishing.');
+    process.exitCode = 1;
   }
-  console.error('verify-dist-fresh: STALE — ' + (r.error || `${r.offenders.length} source file(s) modified after the artifacts were built:`));
-  for (const o of r.offenders.slice(0, 40)) console.error('  ' + o);
-  if (r.offenders.length > 40) console.error(`  … and ${r.offenders.length - 40} more`);
-  console.error('Rebuild (npm run dist) before publishing.');
-  process.exit(1);
+  // 离线市场镜像完整性校验。repoRoot 默认是 dsh-desktop（__dirname/..），
+  // 也兼容显式传入仓库根目录的调用方式，两种锚点都探测一遍。
+  const cacheDir = [
+    path.join(repoRoot, 'dsh-desktop', 'assets', 'market-cache'),
+    path.join(repoRoot, 'assets', 'market-cache'),
+  ].find((p) => fs.existsSync(p));
+  if (cacheDir) {
+    const mc = verifyMarketCache(cacheDir);
+    console.log(`market-cache: ${mc.ok ? 'OK' : 'CORRUPT'} (${mc.count} 项)`);
+    if (!mc.ok) { console.error('  sha256 不匹配: ' + mc.bad.join(', ')); process.exitCode = 1; }
+  }
 }
