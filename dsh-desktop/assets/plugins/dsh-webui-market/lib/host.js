@@ -685,6 +685,8 @@ function fromRegistryPlugin(p, lang) {
     cmd: p.install,
     profile: cc ? cc.profile : 'web',
     source: cc ? cc.source : null,
+    offline: p.offline === true,
+    experimental: p.experimental === true,
     stars: typeof p.stars === 'number' ? p.stars : null,
     added: p.added || null,
   }
@@ -707,6 +709,17 @@ function registryCats(data, lang) {
 /** Map a parsed plugins.json document onto the catalog card shape. */
 function registryToCatalog(data, lang) {
   const locale = pickLang(lang)
+  // 离线镜像打标：仓内条目 → offline（UI 显示「离线包内」）；experimental 透传。
+  // 原始目录条目只有 install（完整命令），source 用 parseCmd 现场解析。
+  if (Array.isArray(data.plugins)) {
+    for (const p of data.plugins) {
+      const cc = parseCmd(p.install)
+      const src = p.source || (cc && cc.source) || ''
+      const hit = src ? resolveCache(src) : null
+      if (hit) p.offline = true
+      p.experimental = p.experimental === true
+    }
+  }
   return {
     plugins: Array.isArray(data.plugins) ? data.plugins.map((p) => fromRegistryPlugin(p, locale)) : [],
     cats: registryCats(data, locale),

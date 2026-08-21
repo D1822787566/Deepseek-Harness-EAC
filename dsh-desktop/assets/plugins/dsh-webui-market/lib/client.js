@@ -239,6 +239,8 @@ window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', fact
     const [query, setQuery] = useState('')
     const [cat, setCat] = useState('all')
     const [showInstalled, setShowInstalled] = useState(false)
+    // 实验性内容默认折叠（NSFW/成人/硬件控制类），勾选后才显示。
+    const [showExperimental, setShowExperimental] = useState(false)
     const [sortBy, setSortBy] = useState('default')
     const [open, setOpen] = useState(null)
     const [op, setOp] = useState(null)
@@ -412,6 +414,8 @@ window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', fact
 
     const filtered = (data.plugins || []).filter((p) => {
       if (cat !== 'all' && p.cat !== cat) return false
+      // 实验性内容默认隐藏，勾选「显示实验性内容」后才出现。
+      if (p.experimental && !showExperimental) return false
       if (showInstalled && !isInstalled(p, data.installed)) return false
       const q = query.trim().toLowerCase()
       if (q && !((p.name || '').toLowerCase().includes(q) || (p.desc || '').toLowerCase().includes(q) || (p.by || '').toLowerCase().includes(q))) return false
@@ -558,6 +562,10 @@ window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', fact
           h('div', { className: 'mkts-sort' },
             [['default', t('sortDefault')], ['hot', t('sortHot')], ['new', t('sortNew')]].map(([key, label]) =>
               h('button', { key, className: sortBy === key ? 'on' : '', onClick: () => setSortBy(key) }, label))),
+          // 实验性内容开关：默认折叠，勾选后显示。
+          h('label', { className: 'mkts-sort', title: LOCALE === 'zh' ? '默认隐藏实验性内容' : 'Show experimental content' },
+            h('input', { type: 'checkbox', checked: showExperimental, onChange: (e) => setShowExperimental(e.target.checked) }),
+            ' ', LOCALE === 'zh' ? '显示实验性内容' : 'Show experimental'),
         ),
       ),
       data.phase === 'loading' ? h('div', null, t('loading')) : null,
@@ -589,6 +597,11 @@ window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', fact
               bltin
                 ? h('span', { className: 'mkts-state mkts-state-builtin', title: t('builtinHint') }, t('builtin'))
                 : h('span', { className: 'mkts-state ' + (inst ? 'mkts-state-on' : 'mkts-state-off') }, inst ? t('instFilter') : (LOCALE === 'zh' ? '未安装' : 'Not installed')),
+              // 离线镜像仓内条目：提示可本地安装。
+              (p.offline
+                ? h('span', { className: 'mkts-state mkts-state-off', title: LOCALE === 'zh' ? '离线包内，可本地安装' : 'In offline cache' },
+                    LOCALE === 'zh' ? '离线包内' : 'Offline')
+                : null),
               h('button', { className: 'mkts-cmdbtn', onClick: () => setOpen(isOpen ? null : p.url) }, isOpen ? t('collapse') : t('detail')),
               bltin ? null
                 : inst

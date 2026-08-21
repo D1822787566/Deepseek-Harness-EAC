@@ -597,6 +597,8 @@ function childEnv() {
   // MCP 等）据此把安装/读写落到桌面专属 profile，而不是原生的 web profile。
   env.DSH_DESKTOP = '1';
   env.DSH_DESKTOP_PROFILE = desktopProfile();
+  // 离线市场镜像仓：市场 host 半边据此提供本地安装通道（无仓 = 纯在线）。
+  env.DSH_DESKTOP_MARKET_CACHE = path.join(__dirname, 'assets', 'market-cache');
   env.NO_COLOR = '1';
   return env;
 }
