@@ -13,7 +13,7 @@
 1. 发版时镜像目录（清理后约 1400-1600 个）为自包含 tgz 打进安装包
    （assets/market-cache/，~2.5-3.5GB），市场 UI 提供本地安装通道。
 2. 供应链缓解：npm install 全程 --ignore-scripts（不执行第三方安装脚本），
-   仅 NATIVE_ALLOWLIST（sharp/node-pty/koffi）精确匹配事后 npm rebuild 放行
+   仅 NATIVE_ALLOWLIST（sharp/node-pty/koffi/prebuild-install）精确匹配事后 npm rebuild 放行
    （scope 同名包如 @evil/sharp 绝不放行）；镜像带 sha256 manifest；
    离线安装走静态门禁（sha256 + 冲突预检 + plugin-guard 快照回滚 +
    桌面 watchdog/rescue-agent 兜底）；在线安装保留 trial-boot 探测。

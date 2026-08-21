@@ -1434,8 +1434,10 @@ git commit -m "ci(release): 构建前跑 mirror-market 全量镜像，超时放�
 1. 发版时镜像目录（清理后约 1400-1600 个）为自包含 tgz 打进安装包
    （assets/market-cache/，~2.5-3.5GB），市场 UI 提供本地安装通道。
 2. 供应链缓解：npm install 全程 --ignore-scripts（不执行第三方安装脚本），
-   仅 NATIVE_ALLOWLIST（sharp/node-pty/koffi）事后 npm rebuild 放行；
-   镜像带 sha256 manifest；安装前离线 boot 探测；plugin-guard 快照回滚。
+   仅 NATIVE_ALLOWLIST（sharp/node-pty/koffi/prebuild-install）精确匹配事后
+   npm rebuild 放行（scope 同名包如 @evil/sharp 绝不放行）；镜像带 sha256
+   manifest；离线安装走静态门禁（sha256 + 冲突预检 + plugin-guard 快照回滚 +
+   桌面 watchdog/rescue-agent 兜底）；在线安装保留 trial-boot 探测。
 3. 更新语义：镜像 = 发版快照；仓外条目在线兜底（复用现有外呼点）；
    不新增常驻外呼。镜像内容 = 发版时刻快照，允许落后于在线目录。
 4. 网络边界：构建期外呼（catalog/npm/codeload）在 CI 侧，与
@@ -1463,6 +1465,20 @@ git commit -m "docs(adr): 离线市场镜像——供应链与网络边界政策
 ```
 
 ---
+
+## 终审修复（Final review 后追加，2026-08-21）
+
+终审发现 3 项 Important + 2 项 Minor，修复如下（已全部落地）：
+
+- **A（安全）offlineInstall 校验 pkg.name**：`host.js offlineInstall` 在 `join(vendorLocal, ...name.split('/'))` 前，用包名正则
+  `/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/` 校验 `pkg.name`，非法 → `{ok:false, error:'非法包名'}`。
+- **B client 型安装补依赖记录**：非 bundle 安装除 `ensurePatchRow` 外，再写 `dependencies[name] = 'link:vendor-local/<name>'`
+  （幂等，与 registerBundle 的 deps 逻辑同款，不进 bundles 数组）——已装徽章/卸载入口可匹配，pnpm 后续操作不清拷贝。
+- **C experimental 并入打标**：`stampCatalogPlugins` 命中缓存时 `if (hit.entry.experimental === true) p.experimental = true;`
+  ——manifest 的 experimental（构建期 EXPERIMENTAL_RE 计算）在离线快照路径真正生效。
+- **D offlineInstall 直接单测**：fixture tgz（archiver 构造，带顶层目录）+ 临时 DSH_HOME profile → 断言
+  vendor-local/node_modules 拷贝、patch 行、dependencies 记录。
+- **E 文档对齐**：ADR 与设计文档的 NATIVE_ALLOWLIST 清单补 `prebuild-install`（代码含、文档漏）。
 
 ## 自审记录
 

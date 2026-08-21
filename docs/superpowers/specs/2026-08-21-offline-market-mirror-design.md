@@ -59,7 +59,7 @@
 **物化三源**（每个插件压成一个自包含 tgz，含 node_modules，安装=纯解包）：
 
 - npm：`npm pack <name>@<latest>` → 解包 → `npm install --omit=dev --ignore-scripts`
-  物化依赖闭包（allow-builds 白名单放行 sharp/node-pty/koffi 等已知原生包）。
+  物化依赖闭包（allow-builds 白名单放行 sharp/node-pty/koffi/prebuild-install 等已知原生包）。
 - GitHub：codeload tarball 下载 → 解包 → 同上物化。
 - tarball：直接下载归档。
 
