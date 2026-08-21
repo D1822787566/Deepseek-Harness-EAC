@@ -16,7 +16,7 @@
 // never reaches that line, so the probe refuses it with the real boot error,
 // and the real profile has never been touched. Static manifest heuristics are
 // gone: only the boot verdict decides installability.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, createReadStream } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, cpSync, createReadStream } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -1422,7 +1422,12 @@ export function stampCatalogPlugins(plugins) {
   if (!Array.isArray(plugins)) return plugins;
   for (const p of plugins) {
     const hit = resolveCache(p.source || p.install || p.cmd || '');
-    if (hit) p.offline = true;
+    if (hit) {
+      p.offline = true;
+      // C(终审): 合并 manifest 的 experimental（构建期 EXPERIMENTAL_RE 计算）——
+      // 离线快照路径的 NSFW/成人/硬件控制类插件必须默认折叠
+      if (hit.entry.experimental === true) p.experimental = true;
+    }
     p.experimental = p.experimental === true;
   }
   return plugins;
@@ -1455,6 +1460,9 @@ export async function offlineInstallPlan(source) {
   }
 }
 
+/** 包名白名单（npm 命名规则子集）：拒绝 ..、绝对路径、空名等越界输入。 */
+const PKG_NAME_RE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+
 /**
  * 本地安装：解包 → vendor-local 落地 → patch 行（+bundle 登记）。
  * 返回 { ok, name, isBundle, isClient } 或 { ok:false, error }。
@@ -1471,18 +1479,28 @@ export async function offlineInstall(profile, plan) {
   try {
     const x = spawnSync('tar', ['-xzf', plan.tgz, '-C', staging], { stdio: 'pipe', encoding: 'utf8' });
     if (x.status !== 0) return { ok: false, error: 'tar 解包失败: ' + ((x.error && x.error.message) || x.stderr || '').slice(0, 300) };
-    const pkgJson = join(staging, 'package.json');
+    // 顶层目录归一：GitHub release 资产带 owner-repo-<sha>/ 顶层目录（镜像侧已
+    // 重打成平铺，但直投原始资产也要能装）——根无 package.json 且恰有一个含
+    // package.json 的目录时把它当作包根（与 mirrorOne 顶层检测同规则）。
+    let pkgRoot = staging;
+    if (!existsSync(join(pkgRoot, 'package.json'))) {
+      const top = readdirSync(pkgRoot).map((n) => join(pkgRoot, n)).filter((p) => statSync(p).isDirectory());
+      if (top.length === 1 && existsSync(join(top[0], 'package.json'))) pkgRoot = top[0];
+    }
+    const pkgJson = join(pkgRoot, 'package.json');
     if (!existsSync(pkgJson)) return { ok: false, error: 'tgz 内无 package.json' };
     const pkg = JSON.parse(readFileSync(pkgJson, 'utf8'));
     const name = pkg.name;
     if (!name) return { ok: false, error: 'package.json 缺 name' };
+    // A(终审): 包名校验——恶意 name 可经 split('/') 拼路径越出 vendor-local
+    if (!PKG_NAME_RE.test(name)) return { ok: false, error: '非法包名: ' + JSON.stringify(name) };
 
     const profileDirP = profileDir(profile);
     const vendorLocal = join(profileDirP, 'vendor-local');
     mkdirSync(vendorLocal, { recursive: true });
     const dest = join(vendorLocal, ...name.split('/'));
     rmSync(dest, { recursive: true, force: true });
-    cpSync(staging, dest, { recursive: true });
+    cpSync(pkgRoot, dest, { recursive: true });
 
     // node_modules 里的包本体（加载器解析基础）
     const nmDest = join(profileDirP, 'node_modules', ...name.split('/'));
@@ -1490,10 +1508,14 @@ export async function offlineInstall(profile, plan) {
     rmSync(nmDest, { recursive: true, force: true });
     cpSync(dest, nmDest, { recursive: true });
 
-    const isBundle = pkg.dsh && pkg.dsh.bundle && typeof pkg.dsh.bundle.patch === 'string';
-    const isClient = pkg.dsh && pkg.dsh.client && pkg.dsh.client.platform === 'web';
-    if (!isBundle) ensurePatchRow(profileDirP, name, 'pm-' + slugFromSource(plan.entry.source || name));
-    else registerBundle(profileDirP, name);
+    const isBundle = !!(pkg.dsh && pkg.dsh.bundle && typeof pkg.dsh.bundle.patch === 'string');
+    const isClient = !!(pkg.dsh && pkg.dsh.client && pkg.dsh.client.platform === 'web');
+    if (!isBundle) {
+      ensurePatchRow(profileDirP, name, 'pm-' + slugFromSource(plan.entry.source || name));
+      registerDependency(profileDirP, name); // B(终审): client 型也记 dependencies——已装徽章/卸载可匹配，pnpm 不清拷贝
+    } else {
+      registerBundle(profileDirP, name);
+    }
 
     return { ok: true, name, isBundle, isClient, dest };
   } catch (err) {
@@ -1525,5 +1547,15 @@ function registerBundle(profileDirP, name) {
   const spec = `link:vendor-local/${name}`;
   if (m.dependencies[name] !== spec) m.dependencies[name] = spec;
   if (!m.dsh.profile.bundles.includes(name)) m.dsh.profile.bundles.push(name);
+  writeFileSync(manifestFile, JSON.stringify(m, null, 2) + '\n');
+}
+
+/** 非 bundle 型也登记 dependencies(link:vendor-local)（幂等；不进 bundles）。 */
+function registerDependency(profileDirP, name) {
+  const manifestFile = join(profileDirP, 'package.json');
+  const m = existsSync(manifestFile) ? JSON.parse(readFileSync(manifestFile, 'utf8')) : { name: 'dsh-profile-web-desktop', private: true };
+  m.dependencies = m.dependencies || {};
+  const spec = `link:vendor-local/${name}`;
+  if (m.dependencies[name] !== spec) m.dependencies[name] = spec;
   writeFileSync(manifestFile, JSON.stringify(m, null, 2) + '\n');
 }

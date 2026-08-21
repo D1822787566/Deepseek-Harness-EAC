@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { slugFromSource, loadMarketManifest, resolveCache, offlineInstallPlan, stampCatalogPlugins } from '../assets/plugins/dsh-webui-market/lib/host.js'
+import { slugFromSource, loadMarketManifest, resolveCache, offlineInstallPlan, offlineInstall, stampCatalogPlugins } from '../assets/plugins/dsh-webui-market/lib/host.js'
 
 function fakeCache(dir) {
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify({
@@ -82,4 +82,71 @@ test('stampCatalogPlugins: 离线打标 + experimental 透传（纯函数，快�
   assert.equal(plugins[3].experimental, false)
   delete process.env.DSH_DESKTOP_MARKET_CACHE
   rmSync(dir, { recursive: true, force: true })
+})
+
+test('offlineInstall: 解包落地 + patch 行 + 依赖记录（fixture tgz，临时 DSH_HOME）', async () => {
+  const { mkdirSync, createWriteStream } = await import('node:fs')
+  const archiver = (await import('archiver')).default
+  const home = mkdtempSync(join(tmpdir(), 'mkt-home-'))
+  const oldHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  try {
+    // 1) fixture tgz：带顶层目录（GitHub release 资产形态）
+    const src = mkdtempSync(join(tmpdir(), 'mkt-offsrc-'))
+    mkdirSync(join(src, 'lib'), { recursive: true })
+    writeFileSync(join(src, 'package.json'), JSON.stringify({ name: 'off-plugin', version: '0.0.1', main: 'lib/index.js', dsh: { client: { platform: 'web' } } }))
+    writeFileSync(join(src, 'lib', 'index.js'), 'module.exports = {};\n')
+    const tgz = join(tmpdir(), `off-${Date.now()}.tgz`)
+    await new Promise((resolve, reject) => {
+      const out = createWriteStream(tgz)
+      const a = archiver('tar', { gzip: true })
+      a.on('error', reject); out.on('close', resolve)
+      a.pipe(out); a.directory(src, 'owner-repo-sha/'); a.finalize()
+    })
+    // 2) 构造 plan（sha256 随意——offlineInstall 不再校验 sha，由 offlineInstallPlan 负责）
+    const plan = { tgz, entry: { source: 'github:owner/off-plugin' } }
+    const r = await offlineInstall('web', plan)
+    assert.equal(r.ok, true)
+    assert.equal(r.name, 'off-plugin')
+    assert.equal(r.isBundle, false)
+    assert.equal(r.isClient, true)
+    const prof = join(home, 'profiles', 'web')
+    // 3) 双落地 + patch 行 + 依赖记录
+    assert.ok((await import('node:fs')).existsSync(join(prof, 'vendor-local', 'off-plugin', 'package.json')))
+    assert.ok((await import('node:fs')).existsSync(join(prof, 'node_modules', 'off-plugin', 'package.json')))
+    const patch = (await import('node:fs')).readFileSync(join(prof, 'cordis.patch.yml'), 'utf8')
+    assert.match(patch, /name: 'off-plugin'/)
+    const manifest = JSON.parse((await import('node:fs')).readFileSync(join(prof, 'package.json'), 'utf8'))
+    assert.equal(manifest.dependencies['off-plugin'], 'link:vendor-local/off-plugin')
+    // 4) 幂等：再装一次不重复写行
+    const r2 = await offlineInstall('web', plan)
+    assert.equal(r2.ok, true)
+    const patch2 = (await import('node:fs')).readFileSync(join(prof, 'cordis.patch.yml'), 'utf8')
+    assert.equal((patch2.match(/name: 'off-plugin'/g) || []).length, 1)
+  } finally {
+    delete process.env.DSH_HOME
+    if (oldHome !== undefined) process.env.DSH_HOME = oldHome
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('offlineInstall: 非法包名 ../../evil 被 Fix A 拒绝（零写入）', async () => {
+  const { mkdirSync, createWriteStream } = await import('node:fs')
+  const archiver = (await import('archiver')).default
+  const src = mkdtempSync(join(tmpdir(), 'mkt-evil-'))
+  mkdirSync(join(src, 'lib'), { recursive: true })
+  writeFileSync(join(src, 'package.json'), JSON.stringify({ name: '../../evil', version: '0.0.1', main: 'lib/index.js', dsh: { client: { platform: 'web' } } }))
+  writeFileSync(join(src, 'lib', 'index.js'), 'module.exports = {};\n')
+  const tgz = join(tmpdir(), `evil-${Date.now()}.tgz`)
+  await new Promise((resolve, reject) => {
+    const out = createWriteStream(tgz)
+    const a = archiver('tar', { gzip: true })
+    a.on('error', reject); out.on('close', resolve)
+    a.pipe(out); a.directory(src, 'owner-repo-sha/'); a.finalize()
+  })
+  const r = await offlineInstall('web', { tgz, entry: { source: 'github:owner/evil' } })
+  assert.equal(r.ok, false)
+  assert.match(String(r.error), /非法包名/)
+  rmSync(src, { recursive: true, force: true })
+  rmSync(tgz, { force: true })
 })
