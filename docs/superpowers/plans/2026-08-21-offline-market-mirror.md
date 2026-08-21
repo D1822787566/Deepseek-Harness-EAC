@@ -1206,37 +1206,43 @@ git commit -m "feat(market): 离线市场镜像安装分支（resolveCache/offli
 Run: `node --check main.js`
 Expected: 无输出（exit 0）
 
-- [ ] **Step 3: host 侧把 offline/experimental 并入目录数据**
+- [ ] **Step 3: host 侧把 offline/experimental 并入目录数据（统一出口，覆盖快照路径）**
 
-`host.js` 的 `registryToCatalog`（~line 707）返回的插件对象里追加两个字段（在 `fromRegistryPlugin` 的返回对象加，~line 684）：
-
-```js
-    offline: cacheEntry ? true : undefined,
-    experimental: p.experimental === true,
-```
-
-其中 `cacheEntry` 在 `loadCatalog` 循环里按 `resolveCache(p.install || p.source)` 求值——在 `registryToCatalog` 开头加：
+在 `host.js` 离线函数区（Task 6 追加的末尾）加一个**导出纯函数**：
 
 ```js
-  for (const p of data.plugins) {
-    const hit = resolveCache(p.install || p.source);
+/** 给目录条目打离线/实验性标（纯函数，可测）。experimental 透传为布尔。 */
+export function stampCatalogPlugins(plugins) {
+  if (!Array.isArray(plugins)) return plugins;
+  for (const p of plugins) {
+    const hit = resolveCache(p.source || p.install || '');
     if (hit) p.offline = true;
     p.experimental = p.experimental === true;
   }
+  return plugins;
+}
 ```
+
+在 `loadCatalog`（~line 721，live JSON API / 静态页缓存 / 内置 snapshot 三源汇聚处）**返回前**统一调用一次（三源全覆盖——纯离线机器走 snapshot 也必须看到徽章）：
+
+```js
+  // 离线镜像打标（三源统一出口：live/cache/snapshot 都打）
+  stampCatalogPlugins(result.plugins);
+  return result;
+```
+
+（`loadCatalog` 现有返回形状为 `{plugins, cats, source}`——按实际代码在每处 return 前或统一出口调用；`p.source` 不存在时用 `p.install` 的 `parseCmd` 结果，见 `fromRegistryPlugin` 的字段命名，保持与 stampCatalogPlugins 的 `p.source || p.install` 兼容。）
 
 - [ ] **Step 4: client.js 徽章 + 折叠**
 
-`client.js` 卡片渲染区（~line 559 `const inst = ...` 处）加徽章，插在状态 span 之前：
+`client.js` 卡片头部状态行（~line 559 起，`const inst = ...` / `const bltin = ...` 之后的元素序列里、`未安装/Not installed` 状态 span 之后）加一个元素（hyperscript 风格，与周围一致）：
 
 ```js
-          const offBadge = p.offline
-            ? h('span', { className: 'mkts-state mkts-state-off', title: LOCALE === 'zh' ? '离线包内，可本地安装' : 'In offline cache' },
-                LOCALE === 'zh' ? '离线包内' : 'Offline')
-            : null,
+              (p.offline
+                ? h('span', { className: 'mkts-state mkts-state-off', title: LOCALE === 'zh' ? '离线包内，可本地安装' : 'In offline cache' },
+                    LOCALE === 'zh' ? '离线包内' : 'Offline')
+                : null),
 ```
-
-并把 `offBadge` 渲染进卡片头部（`inst` 状态 span 同一行）。
 
 折叠：数据过滤处（~line 405 `if (showInstalled ...)` 之前）加：
 
@@ -1244,22 +1250,58 @@ Expected: 无输出（exit 0）
       if (p.experimental && !showExperimental) return false
 ```
 
-`showExperimental` 为新增 state（默认 `false`），分类栏加一个切换按钮：
+`showExperimental` 为新增 state（默认 `false`），在组件顶部 `useState` 区（~line 236 `const [data, setData] = useState(...)` 附近）加：
 
 ```js
           const [showExperimental, setShowExperimental] = useState(false)
-          // 分类栏：在现有排序按钮行加
-          h('label', { className: 'mkts-sort' },
+```
+
+分类/排序栏（~line 539-550，cats 按钮与排序按钮行）加一个复选框（`mkts-sort` 是现成按钮类名）：
+
+```js
+          h('label', { className: 'mkts-sort', title: LOCALE === 'zh' ? '默认隐藏实验性内容' : 'Show experimental content' },
             h('input', { type: 'checkbox', checked: showExperimental, onChange: (e) => setShowExperimental(e.target.checked) }),
             ' ', LOCALE === 'zh' ? '显示实验性内容' : 'Show experimental'),
 ```
 
-（`useState` 已在文件顶部解构，直接复用。）
+（`useState` 已在文件顶部解构。以上片段以实际文件结构为准做等价适配——读 `client.js` 的卡片渲染与过滤区再插入，保持 hyperscript 元素序列合法。）
 
 - [ ] **Step 5: 语法检查**
 
 Run: `node --check assets/plugins/dsh-webui-market/lib/client.js`
 Expected: 无输出（exit 0）
+
+- [ ] **Step 5b: 打标函数单测 + 回归**
+
+在 `test/market-offline.test.mjs` 追加（import 加 `stampCatalogPlugins`）：
+
+```js
+test('stampCatalogPlugins: 离线打标 + experimental 透传（纯函数，快照路径也走它）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mkt-stamp-'))
+  process.env.DSH_DESKTOP_MARKET_CACHE = dir
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({
+    entries: { 'dsh-pet': { name: 'dsh-pet', version: '0.1.4', sha256: 'y'.repeat(64), source: 'github:PC2005-cloud/dsh-pet', sizeBytes: 4 } },
+  }))
+  const plugins = [
+    { name: 'a', source: 'github:PC2005-cloud/dsh-pet' },
+    { name: 'b', source: 'github:nobody/nothing' },
+    { name: 'c', source: 'github:x/y', experimental: true },
+    { name: 'd', source: 'github:z/w', experimental: false },
+  ]
+  stampCatalogPlugins(plugins)
+  assert.equal(plugins[0].offline, true)
+  assert.equal(plugins[1].offline, undefined)
+  assert.equal(plugins[2].experimental, true)
+  assert.equal(plugins[3].experimental, false)
+  delete process.env.DSH_DESKTOP_MARKET_CACHE
+  rmSync(dir, { recursive: true, force: true })
+})
+```
+
+（`resolveCache` 只查 manifest 条目、不校验 tgz 存在性——stamp 测试无需真实 tgz。）
+
+Run: `node --test test/market-offline.test.mjs test/market-installed.test.mjs test/mirror-market.test.mjs`
+Expected: PASS（market-offline 变 5 个用例；host.js 改动不破坏现有测试）
 
 - [ ] **Step 6: Commit**
 
