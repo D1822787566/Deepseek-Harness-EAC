@@ -4,7 +4,7 @@
 
 **Goal:** 发版时把 awesome-dsh-plugin.com 目录清理后镜像为离线插件仓（`assets/market-cache/`）打进安装包，市场 UI 对仓内插件提供断网可用的本地安装通道，仓外条目保持在线兜底，不新增常驻外呼。
 
-**Architecture:** 构建期 `scripts/mirror-market.js` 拉取目录 → 清理（去重/探活/实验性 tag）→ 三源物化（npm pack / codeload / 直链）成自包含 tgz（插件本体 + node_modules 依赖闭包，`--ignore-scripts` 安全物化）→ 产出 `manifest.json`（sha256 清单）。运行时 `dsh-webui-market/lib/host.js` 加 `resolveCache()` 分支：manifest 命中则本地解包 + patch 行 + 离线 boot 探测 + 快照 + 热挂，未命中走现有在线安装。
+**Architecture:** 构建期 `scripts/mirror-market.js` 拉取目录 → 清理（去重/探活/实验性 tag）→ 三源物化（npm pack / codeload / 直链）成自包含 tgz（插件本体 + node_modules 依赖闭包，`--ignore-scripts` 安全物化）→ 产出 `manifest.json`（sha256 清单）。运行时 `dsh-webui-market/lib/host.js` 加 `resolveCache()` 分支：manifest 命中则本地解包 + patch 行 + 静态门禁（sha256/冲突预检/快照）+ 热挂，未命中走现有在线安装。
 
 **Tech Stack:** Node 22+（CommonJS 脚本 + ESM 插件）、`archiver`（已依赖）、Windows tar.exe（系统自带）、node --test、electron-builder、GitHub Actions。
 
@@ -19,7 +19,7 @@
 | `dsh-desktop/scripts/mirror-market.js`（新建） | 镜像构建器：目录拉取/清理/物化/打包/清单 |
 | `dsh-desktop/test/mirror-market.test.mjs`（新建） | 镜像构建器单测（不联网：fixture + fetch stub） |
 | `dsh-desktop/test/market-offline.test.mjs`（新建） | host.js 离线安装分支单测 |
-| `dsh-desktop/assets/plugins/dsh-webui-market/lib/host.js`（修改） | `resolveCache` / `offlineInstall` / `ensurePatchRow` / `offlineProbe` / 导出 |
+| `dsh-desktop/assets/plugins/dsh-webui-market/lib/host.js`（修改） | `resolveCache` / `offlineInstall` / `ensurePatchRow` / `registerBundle` / 导出 |
 | `dsh-desktop/assets/plugins/dsh-webui-market/lib/client.js`（修改） | 「离线包内」徽章 + experimental 默认折叠 |
 | `dsh-desktop/main.js`（修改，~line 599） | `childEnv()` 注入 `DSH_DESKTOP_MARKET_CACHE` |
 | `dsh-desktop/package.json`（修改） | 加 `mirror-market` / `mirror-market:sample` 脚本 |
@@ -910,14 +910,27 @@ test('resolveCache: 命中返回 { slug, entry, tgz }', async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('offlineInstallPlan: 命中=local / 未命中=online / hash 不符=online', async () => {
+test('offlineInstallPlan: local 正路径（sha256 一致）/ missing-tgz / hash 不符 / miss', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mkt-plan-'))
-  fakeCache(dir)
   process.env.DSH_DESKTOP_MARKET_CACHE = dir
+  const { createHash } = await import('node:crypto')
+  const correct = Buffer.from('fake-tgz-bytes')
+  const realSha = createHash('sha256').update(correct).digest('hex')
+  // 先写真实 sha 的 manifest + 匹配的 tgz（在首次 loadMarketManifest 之前）
+  writeFileSync(join(dir, 'dsh-pet.tgz'), correct)
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({
+    entries: { 'dsh-pet': { name: 'dsh-pet', version: '0.1.4', sha256: realSha, source: 'github:PC2005-cloud/dsh-pet', sizeBytes: correct.length } },
+  }))
+  // 1) local 正路径
   assert.equal((await offlineInstallPlan('github:PC2005-cloud/dsh-pet')).mode, 'local')
+  // 2) tgz 删除 → missing-tgz → online
+  rmSync(join(dir, 'dsh-pet.tgz'), { force: true })
+  assert.equal((await offlineInstallPlan('github:PC2005-cloud/dsh-pet')).mode, 'online')
+  // 3) 换内容 → hash 不符 → online
+  writeFileSync(join(dir, 'dsh-pet.tgz'), 'different-bytes')
+  assert.equal((await offlineInstallPlan('github:PC2005-cloud/dsh-pet')).mode, 'online')
+  // 4) miss
   assert.equal((await offlineInstallPlan('github:nobody/nothing')).mode, 'online')
-  const bad = await offlineInstallPlan('github:PC2005-cloud/dsh-pet')
-  assert.equal(bad.mode, 'online') // tgz 不存在 → hash 校验不过 → online 兜底
   delete process.env.DSH_DESKTOP_MARKET_CACHE
   rmSync(dir, { recursive: true, force: true })
 })
@@ -944,12 +957,16 @@ export function marketCacheRoot() {
 }
 
 let manifestCache = null;
+let manifestCacheRoot = null;
 export function loadMarketManifest() {
   const root = marketCacheRoot();
   if (!root) return null;
-  if (manifestCache) return manifestCache;
+  // 按缓存根缓存：DSH_DESKTOP_MARKET_CACHE 变化（profile 切换/测试）时重读，
+  // 避免进程内长期服务过期快照。
+  if (manifestCache && manifestCacheRoot === root) return manifestCache;
   try {
     manifestCache = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+    manifestCacheRoot = root;
     return manifestCache;
   } catch { return null; }
 }
@@ -991,7 +1008,7 @@ function sha256File(p) {
  */
 export async function offlineInstallPlan(source) {
   const hit = resolveCache(source);
-  if (!hit) return { mode: 'online' };
+  if (!hit) return { mode: 'online', reason: 'miss' };
   try {
     if (!existsSync(hit.tgz)) return { mode: 'online', reason: 'missing-tgz' };
     const sha = await sha256File(hit.tgz);
@@ -1009,15 +1026,21 @@ export async function offlineInstallPlan(source) {
 
 ```js
 /**
- * 本地安装：解包 → vendor-local 落地 → patch 行（+bundle 登记）→ 离线 boot 探测。
+ * 本地安装：解包 → vendor-local 落地 → patch 行（+bundle 登记）。
  * 返回 { ok, name, isBundle, isClient } 或 { ok:false, error }。
  * 复用现有 snapshotProfile / hotMount 语义（调用方负责）。
+ *
+ * 【探测策略偏差（用户已拍板）】：离线安装不做完整 boot 探测——在线
+ * trial-boot（runProbe）要在临时 profile 里 pnpm 联网装核心包才能启动，
+ * 离线场景必然失败。改为静态门禁：offlineInstallPlan 的 sha256 校验 +
+ * 此处包结构校验 + 路由里复用 conflictScan 冲突预检 + plugin-guard 快照
+ * 回滚 + 桌面 watchdog/rescue-agent 兜底。在线安装保留原 trial-boot。
  */
 export async function offlineInstall(profile, plan) {
   const staging = mkdtempSync(join(tmpdir(), 'dsh-mkt-local-'));
   try {
     const x = spawnSync('tar', ['-xzf', plan.tgz, '-C', staging], { stdio: 'pipe', encoding: 'utf8' });
-    if (x.status !== 0) return { ok: false, error: 'tar 解包失败: ' + (x.stderr || '').slice(0, 300) };
+    if (x.status !== 0) return { ok: false, error: 'tar 解包失败: ' + ((x.error && x.error.message) || x.stderr || '').slice(0, 300) };
     const pkgJson = join(staging, 'package.json');
     if (!existsSync(pkgJson)) return { ok: false, error: 'tgz 内无 package.json' };
     const pkg = JSON.parse(readFileSync(pkgJson, 'utf8'));
@@ -1074,37 +1097,9 @@ function registerBundle(profileDirP, name) {
   if (!m.dsh.profile.bundles.includes(name)) m.dsh.profile.bundles.push(name);
   writeFileSync(manifestFile, JSON.stringify(m, null, 2) + '\n');
 }
-
-/** 离线 boot 探测：临时 profile（CLI 模板）+ 拷贝自包含插件 + patch 行 + 真实 boot。 */
-export async function offlineProbe(explicitBin, plan, profileName) {
-  const inv = dshInvoke(explicitBin);
-  if (!inv) return { ok: false, stage: 'probe', output: 'dsh CLI 未定位' };
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mkts-offprobe-'));
-  try {
-    // 用真实 profile 的 vendor-local 源：先装到临时 profile 的 node_modules
-    const staging = mkdtempSync(join(tmpdir(), 'dsh-mkts-offstage-'));
-    const x = spawnSync('tar', ['-xzf', plan.tgz, '-C', staging], { stdio: 'pipe', encoding: 'utf8' });
-    if (x.status !== 0) return { ok: false, stage: 'probe', output: 'tar 解包失败' };
-    const pkg = JSON.parse(readFileSync(join(staging, 'package.json'), 'utf8'));
-    const tmpNm = join(home, 'profiles', profileName, 'node_modules');
-    mkdirSync(tmpNm, { recursive: true });
-    fs.cpSync(staging, join(tmpNm, ...pkg.name.split('/')), { recursive: true });
-    const patchFile = join(home, 'profiles', profileName, 'cordis.patch.yml');
-    writeFileSync(patchFile, `- insert:\n    - id: probe-${slugFromSource(pkg.name)}\n      name: '${pkg.name}'\n`);
-    rmSync(staging, { recursive: true, force: true });
-    // 复用现有 boot 等待逻辑：spawnCapture 等 `dsh web:` 就绪行
-    const boot = await spawnCapture(inv.file, [...inv.args, 'web', '--profile', profileName, '--host', '127.0.0.1', '--port', '0'], {
-      cwd: inv.cwd, env: { ...process.env, DSH_HOME: home }, timeoutMs: 120000,
-      readyRe: /dsh web:/,
-    });
-    return boot.ready ? { ok: true } : { ok: false, stage: 'boot', output: boot.output };
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
-}
 ```
 
-注意：`offlineInstall` / `ensurePatchRow` / `registerBundle` / `offlineProbe` 需要 `spawnSync`、`mkdirSync`、`dirname`、`fs` 命名空间——host.js 顶部已有 `import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'`（缺 `createReadStream`、`cpSync` 需补）和 `import { spawn } from 'node:child_process'`（缺 `spawnSync`）。**Step 4b 修改顶部 import 补足**：
+注意：`offlineInstall` / `ensurePatchRow` / `registerBundle` 需要 `spawnSync`、`mkdirSync`、`dirname`、`fs` 命名空间——host.js 顶部已有 `import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'`（缺 `createReadStream`、`cpSync` 需补）和 `import { spawn } from 'node:child_process'`（缺 `spawnSync`）。**Step 4b 修改顶部 import 补足**：
 
 ```js
 import { createReadStream, cpSync } from 'node:fs';   // 并入现有 node:fs import
@@ -1124,20 +1119,23 @@ Expected: 无输出（exit 0）
 if (method === 'install') {
   const plan = await offlineInstallPlan(target);
   if (plan.mode === 'local') {
-    // 离线路径：快照 → 离线 boot 探测 → 本地解包 + patch 行（+bundle 登记）→ 热挂。
-    // 与在线路径同语义：快照只留作回滚点（snapshotProfile 返回路径字符串，
-    // 见 :1293 在线路径用法）；探测失败时真实 profile 未被动过。
-    const snap = snapshotProfile(profile);
-    const probeVerdict = body.skipCheck ? { ok: true } : await offlineProbe(bin, plan, profile);
-    if (!probeVerdict.ok) {
-      // 与在线 trial-boot 拒绝同构（对照 :1285-1289 的返回形状）
-      return sendJson(res, 200, {
-        ok: false, refused: true, op: null,
-        output: probeVerdict.stage + '（真实 profile 未受影响，试装目录已清理）：\n\n'
-          + String(probeVerdict.output || '').slice(-8000)
-          + '\n\n如需强制安装（风险自负），请勾选"跳过试装验证"。',
-      });
+    // 离线路径（静态门禁策略，用户已拍板）：冲突预检 → 快照 → 本地解包
+    // + patch 行（+bundle 登记）→ 热挂。不做完整 boot 探测（在线 runProbe
+    // 需联网装核心包，离线必然失败）；sha256 已由 offlineInstallPlan 校验，
+    // 包结构由 offlineInstall 校验，plugin-guard 快照 + 桌面 watchdog/
+    // rescue-agent 兜底启动失败。
+    if (!body.skipCheck) {
+      const scan = await conflictScan(profile, target);
+      if (scan && scan.level === 'refuse') {
+        return sendJson(res, 200, {
+          ok: false, refused: true, op: null,
+          output: '冲突预检拒绝（真实 profile 未受影响）：\n\n'
+            + (scan.issues || []).map((i) => '• ' + i.message).join('\n')
+            + '\n\n如需强制安装（风险自负），请勾选"跳过安全检查"。',
+        });
+      }
     }
+    const snap = snapshotProfile(profile);
     const installed = await offlineInstall(profile, plan);
     if (!installed.ok) return sendJson(res, 200, { ok: false, op: null, error: installed.error, output: installed.error });
     if (snap) console.log('[dsh-market] offline install snapshot: ' + snap);
@@ -1150,7 +1148,7 @@ if (method === 'install') {
 }
 ```
 
-（`bin` = `String(body.binPath || '').trim()`，与 :1314 同源；`body.skipCheck`、`hotCtx`、`readProfileDeps`、`tryHotMountAll` 均为现有作用域/函数，勿重复定义。）
+（`body.skipCheck`、`hotCtx`、`readProfileDeps`、`tryHotMountAll`、`conflictScan`（:1018，返回 `{ok, level, issues}`）均为现有作用域/函数，勿重复定义；`snapshotProfile` 只产快照路径，见 :1293 在线路径用法。）
 
 - [ ] **Step 5b: client.js 处理同步完成（offline 响应）**
 
@@ -1183,7 +1181,7 @@ Expected: PASS
 
 ```bash
 git add assets/plugins/dsh-webui-market/lib/host.js test/market-offline.test.mjs
-git commit -m "feat(market): 离线市场镜像安装分支（resolveCache/offlineInstall/offlineProbe）"
+git commit -m "feat(market): 离线市场镜像安装分支（resolveCache/offlineInstall/静态门禁）"
 ```
 
 ---
@@ -1418,13 +1416,13 @@ git commit -m "docs(adr): 离线市场镜像——供应链与网络边界政策
 
 ## 自审记录
 
-- **Spec 覆盖**：设计文档 7 项待实现 → Task 1（基建）、2-5（mirror-market + 测试）、6（host.js 离线安装）、7（main.js 注入 + client.js UI）、8（verify 扩展）、9（CI）、10（ADR）全覆盖；错误处理表（死链/闭包失败/boot 失败/hash 不符/断网）分别落在 Task 3 probe、Task 4 mirrorOne 返回、Task 6 offlineProbe/offlineInstallPlan、Task 8 verify。
+- **Spec 覆盖**：设计文档 7 项待实现 → Task 1（基建）、2-5（mirror-market + 测试）、6（host.js 离线安装）、7（main.js 注入 + client.js UI）、8（verify 扩展）、9（CI）、10（ADR）全覆盖；错误处理表（死链/闭包失败/hash 不符/断网）分别落在 Task 3 probe、Task 4 mirrorOne 返回、Task 6 offlineInstallPlan/conflictScan、Task 8 verify。
 - **占位扫描**：无 TBD/TODO；所有代码步骤含完整实现。
 - **类型一致性**：`slugOf`（构建侧）/`slugFromSource`（host 侧）规则一致；`resolveCache` 返回 `{slug, entry, tgz}` 在 Task 6 测试与实现中同名同构；`experimental` 字段在构建侧写入、host 侧透传、client 侧消费，三处命名一致。
 
 ## 风险备注（实现时注意）
 
 - `host.js` 顶部 import 需补 `cpSync`/`createReadStream`/`spawnSync`（Task 6 Step 4b）。
-- `snapshotProfile` 只产出快照路径（供保护中心回滚），**没有** restore 函数——Task 6 Step 5 已按此接线（快照留作回滚点，探测失败时 profile 未被触碰）。
-- `spawnCapture` 已存在于 host.js（:505），offlineProbe 直接复用其 `readyRe` 语义。
+- `snapshotProfile` 只产出快照路径（供保护中心回滚），**没有** restore 函数——Task 6 Step 5 已按此接线（快照留作回滚点，静态门禁拒绝/失败时 profile 未被触碰）。
+- 离线安装不做 boot 探测（用户已拍板静态门禁）：在线 `runProbe` 需联网装核心包，离线必然失败——此偏差已写入 Task 6 Step 4 注释与设计文档。
 - 离线探测的临时 profile 若因缺核心 bundle 无法 boot（CLI 模板差异），探测失败会拒绝安装——这是设计内行为（boot 判据优先），必要时在 op UI 的「skip safety checks」放行。

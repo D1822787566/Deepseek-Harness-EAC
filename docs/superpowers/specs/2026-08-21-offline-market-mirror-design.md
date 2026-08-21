@@ -90,18 +90,21 @@ mirror 产物可进 CI cache（TTL 刷新）。
 新增 `resolveCache(source)`：查 manifest。
 
 - **命中**（仓内）：本地安装路径——
-  1. 解包 `<slug>.tgz` 到 `profile/node_modules/<name>`（`--ignore-scripts` 语义
-     不变，闭包已物化，零 npm 解析）；
+  1. 解包 `<slug>.tgz` 到 `profile/vendor-local/<name>`（`--ignore-scripts` 语义
+     不变，闭包已物化，零 npm 解析）并拷入 `profile/node_modules/<name>`；
   2. 幂等写 patch 行 / bundles（复用 `syncCompanionPlugins` 的
      `copyPluginPackage` + patch 行模式，main.js:3993 起）；
-  3. `runProbe` trial-boot 试装探测（装进临时 profile 真实 boot 验证，现有
-     逻辑 host.js:442 原样复用——第三方包批量进场，boot 判据是唯一可信的
-     「能不能装」）；
-  4. `snapshotProfile` 快照（回滚用，host.js:541）；
-  5. `hotMount` 热挂免重启（host.js:827）。
-  6. 复用现有 op 机制（超时/输出截断/轮询/取消，`startOp` host.js:262）。
-- **未命中**（仓外新条目）：走现有 `dsh plugin add` 在线路径，装后把 tgz
-  缓存进 `userData/market-cache/`（本地复用，不新增常驻外呼）。
+  3. **静态门禁**（2026-08-21 用户拍板，替代 boot 探测——在线 `runProbe`
+     host.js:442 需在临时 profile 里 pnpm **联网**装核心包才能启动，离线场景
+     必然失败）：`offlineInstallPlan` 的 sha256 校验 + 包结构校验 +
+     复用 `conflictScan`（host.js:1018）冲突预检 + `snapshotProfile` 快照
+     （回滚用，host.js:541）；
+  4. `hotMount` 热挂免重启（host.js:827）。
+  5. 复用现有 op 机制（超时/输出截断/轮询/取消，`startOp` host.js:262）。
+  6. 桌面 watchdog / rescue-agent / plugin-guard 兜底启动失败（装坏可回滚）。
+- **未命中**（仓外新条目）：走现有 `dsh plugin add` 在线路径（保留在线
+  trial-boot 探测），装后把 tgz 缓存进 `userData/market-cache/`（本地复用，
+  不新增常驻外呼）。
 
 卸载 / 更新检测 / 冲突预检 / 内置同名拦截（`.dsh-builtin-plugins.json`）全部
 复用现有逻辑，零改动。
@@ -124,8 +127,9 @@ mirror 产物可进 CI cache（TTL 刷新）。
 |---|---|
 | 构建期死链/404 | 探活剔除，记入 report.json；镜像不中断 |
 | 依赖闭包物化失败 | 该插件跳过并记入 report；不阻塞其余 |
-| 离线安装后 boot 失败 | trial-boot 拒绝，真实 profile 未被触碰（现有语义） |
-| 仓内 tgz 损坏（sha256 不符） | 拒绝本地安装，回退在线路径 |
+| 离线安装包损坏（sha256 不符） | 拒绝本地安装，回退在线路径 |
+| 离线安装冲突预检拒绝 | conflictScan refuse → 拒绝安装，真实 profile 未被触碰（现有语义） |
+| 离线安装后启动失败 | 静态门禁策略：plugin-guard 快照回滚 + watchdog/rescue-agent 兜底（在线路径保留 trial-boot 拒绝语义） |
 | 新条目断网安装 | 现有错误提示（网络不可达） |
 
 ## 测试
