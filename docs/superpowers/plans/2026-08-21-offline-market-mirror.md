@@ -1350,14 +1350,22 @@ function verifyMarketCache(cacheDir) {
 }
 ```
 
-`module.exports` 追加 `verifyMarketCache`；CLI 段（`require.main === module`）在现有输出后追加：
+`module.exports` 追加 `verifyMarketCache`；CLI 段（`require.main === module`）在现有输出后追加（全英文输出——AGENTS.md §5.4；双锚点：脚本默认 repoRoot 是 dsh-desktop）：
 
 ```js
-  const cacheDir = path.join(repoRoot, 'dsh-desktop', 'assets', 'market-cache');
-  if (fs.existsSync(cacheDir)) {
+  // Offline market mirror integrity (dual anchor: script default cwd is dsh-desktop).
+  const cacheCandidates = [
+    path.join(repoRoot, 'dsh-desktop', 'assets', 'market-cache'),
+    path.join(repoRoot, 'assets', 'market-cache'),
+  ];
+  const cacheDir = cacheCandidates.find((p) => fs.existsSync(p));
+  if (cacheDir) {
     const mc = verifyMarketCache(cacheDir);
-    console.log(`market-cache: ${mc.ok ? 'OK' : 'CORRUPT'} (${mc.count} 项)`);
-    if (!mc.ok) { console.error('  sha256 不匹配: ' + mc.bad.join(', ')); process.exitCode = 1; }
+    console.log(`market-cache: ${mc.ok ? 'OK' : 'CORRUPT'} (${mc.count} entries)`);
+    if (!mc.ok) {
+      console.error('  ' + (mc.error || ('sha256 mismatch: ' + mc.bad.join(', '))));
+      process.exitCode = 1;
+    }
   }
 ```
 
