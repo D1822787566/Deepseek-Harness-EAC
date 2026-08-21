@@ -370,6 +370,16 @@ window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', fact
           })
           return
         }
+        // 离线镜像安装：host 同步完成（无 opId），直接收尾并刷新已装态。
+        if (r.offline) {
+          setOp({
+            ...op, phase: 'done', status: 'ok', ok: true,
+            output: (r.needRestart ? t('installOk') : t('hotOk'))
+              + (LOCALE === 'zh' ? '（离线包内安装）' : ' (offline cache)'),
+          })
+          loadInstalled()
+          return
+        }
         setOp({ ...op, phase: 'running', opId: r.opId, output: '', status: 'running', elapsedMs: 0, timeoutMs: r.timeoutMs })
         pollOp(r.opId)
       }).catch((e) => {

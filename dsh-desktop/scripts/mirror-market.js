@@ -281,7 +281,8 @@ async function mirrorOne(entry, ctx) {
       extractTgz(tar, join(work, 'pkg'));
       // GitHub release 资产带 owner-repo-<sha>/ 顶层目录 → 与 npm/github 分支同款顶层检测
       const top = fs.readdirSync(join(work, 'pkg')).map((n) => join(work, 'pkg', n)).find((p) => fs.statSync(p).isDirectory());
-      pkgRoot = top || join(work, 'pkg');
+      // 平铺 tarball 若 package.json 在根且带 src/ 目录，不再误选 src/。
+      pkgRoot = (top && fs.existsSync(join(top, 'package.json')) ? top : join(work, 'pkg'));
     }
     if (!pkgRoot || !fs.existsSync(join(pkgRoot, 'package.json'))) {
       return { slug, entry, ok: false, stage: 'materialize', error: 'no package.json after materialize' };

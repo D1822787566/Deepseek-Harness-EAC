@@ -16,11 +16,12 @@
 // never reaches that line, so the probe refuses it with the real boot error,
 // and the real profile has never been touched. Static manifest heuristics are
 // gone: only the boot verdict decides installability.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, createReadStream } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 // V4：pnpm 重写 node_modules 前后快照/回填第三方包的本地构建产物
 // （meow-memory 等人工补齐的 lib/ 不再被每次安装/更新清掉）。
 import { snapshotArtifacts, restoreArtifacts } from './artifact-keep.mjs'
@@ -1246,6 +1247,44 @@ export function apply(ctx) {
               })
             }
           }
+          if (method === 'install') {
+            // 离线路径（静态门禁策略，用户已拍板）：冲突预检 → 快照 → 本地
+            // 解包 + patch 行（+bundle 登记）→ 热挂。不做完整 boot 探测
+            // （在线 runProbe 需联网装核心包，离线必然失败）；sha256 已由
+            // offlineInstallPlan 校验，包结构由 offlineInstall 校验，
+            // plugin-guard 快照 + 桌面 watchdog/rescue-agent 兜底启动失败。
+            const plan = await offlineInstallPlan(target)
+            if (plan.mode === 'local') {
+              if (!body.skipCheck) {
+                const scan = await conflictScan(profile, target)
+                if (scan && scan.ok && scan.level === 'refuse') {
+                  return sendJson(res, 200, {
+                    ok: false, refused: true, op: null,
+                    output: '冲突预检拒绝（真实 profile 未受影响）：\n\n'
+                      + (scan.issues || []).map((i) => '• ' + i.message).join('\n')
+                      + '\n\n如需强制安装（风险自负），请勾选"跳过安全检查"。',
+                  })
+                }
+              }
+              // beforeDeps 必须在安装前读取（与在线 startOp 同语义）：bundle
+              // 登记写入 dependencies 后，tryHotMountAll 才能算出新增包。
+              const beforeDeps = readProfileDeps(profile)
+              const snap = snapshotProfile(profile)
+              const installed = await offlineInstall(profile, plan)
+              if (!installed.ok) return sendJson(res, 200, { ok: false, op: null, error: installed.error, output: installed.error })
+              if (snap) console.log('[dsh-market] offline install snapshot: ' + snap)
+              let mounted = false
+              if (installed.isClient && hotCtx !== null) {
+                mounted = await tryHotMountAll(ctx, profile, beforeDeps)
+              }
+              return sendJson(res, 200, {
+                ok: true, op: null, offline: true, label: installed.name,
+                // bundle 登记（或热挂未成功）→ 重启生效；热挂成功 → 立即生效。
+                needRestart: installed.isBundle || !mounted,
+              })
+            }
+            // 未命中 → 现有在线路径（含 builtin 守卫，见下）
+          }
           if (method === 'install' && !body.skipCheck) {
             // V4.2：冲突预检（refuse 直接拒绝；warn 只提醒不拦）。
             // 与试装验证互补：这里是「会不会互相踩」，试装是「能不能启动」。
@@ -1322,4 +1361,144 @@ export function apply(ctx) {
       }
     },
   })
+}
+
+// ── 离线市场镜像（Offline Market Mirror）────────────────────────────────
+
+/** 缓存根：主进程经 DSH_DESKTOP_MARKET_CACHE 注入（无 = 未启用）。 */
+export function marketCacheRoot() {
+  const p = process.env.DSH_DESKTOP_MARKET_CACHE;
+  return p && existsSync(p) ? p : null;
+}
+
+let manifestCache = null;
+export function loadMarketManifest() {
+  const root = marketCacheRoot();
+  if (!root) return null;
+  if (manifestCache) return manifestCache;
+  try {
+    manifestCache = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+    return manifestCache;
+  } catch { return null; }
+}
+
+/** install 源 → slug（与构建侧 slugOf 同规则，双端一致；@scope/name → scope-name）。 */
+export function slugFromSource(source) {
+  let s = String(source || '').trim();
+  s = s.replace(/^(github|gitlab|bitbucket|link|file|npm):/, '');
+  s = s.replace(/#.*$/, '');
+  s = s.replace(/@v?[0-9][^/]*$/, '');
+  s = s.replace(/^@([^/]+)\//, '$1-');
+  s = s.split('/').pop().replace(/\.git$/, '').replace(/\.tgz$/i, '');
+  return s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/** source → 缓存命中项 { slug, entry, tgz } 或 null。 */
+export function resolveCache(source) {
+  const manifest = loadMarketManifest();
+  const root = marketCacheRoot();
+  if (!manifest || !root) return null;
+  const slug = slugFromSource(source);
+  const entry = manifest.entries && manifest.entries[slug];
+  return entry ? { slug, entry, tgz: join(root, slug + '.tgz') } : null;
+}
+
+function sha256File(p) {
+  return new Promise((resolve, reject) => {
+    const h = createHash('sha256');
+    const s = createReadStream(p);
+    s.on('data', (d) => h.update(d));
+    s.on('end', () => resolve(h.digest('hex')));
+    s.on('error', reject);
+  });
+}
+
+/**
+ * 安装计划：命中且 sha256 一致 → { mode:'local', slug, entry, tgz }；
+ * 未命中或 tgz 缺失/校验失败 → { mode:'online' }（走现有在线路径）。
+ */
+export async function offlineInstallPlan(source) {
+  const hit = resolveCache(source);
+  if (!hit) return { mode: 'online' };
+  try {
+    if (!existsSync(hit.tgz)) return { mode: 'online', reason: 'missing-tgz' };
+    const sha = await sha256File(hit.tgz);
+    if (sha !== hit.entry.sha256) return { mode: 'online', reason: 'hash-mismatch' };
+    return { mode: 'local', slug: hit.slug, entry: hit.entry, tgz: hit.tgz };
+  } catch {
+    return { mode: 'online', reason: 'io-error' };
+  }
+}
+
+/**
+ * 本地安装：解包 → vendor-local 落地 → patch 行（+bundle 登记）。
+ * 返回 { ok, name, isBundle, isClient } 或 { ok:false, error }。
+ * 复用现有 snapshotProfile / hotMount 语义（调用方负责）。
+ *
+ * 【探测策略偏差（用户已拍板）】：离线安装不做完整 boot 探测——在线
+ * trial-boot（runProbe）要在临时 profile 里 pnpm 联网装核心包才能启动，
+ * 离线场景必然失败。改为静态门禁：offlineInstallPlan 的 sha256 校验 +
+ * 此处包结构校验 + 路由里复用 conflictScan 冲突预检 + plugin-guard 快照
+ * 回滚 + 桌面 watchdog/rescue-agent 兜底。在线安装保留原 trial-boot。
+ */
+export async function offlineInstall(profile, plan) {
+  const staging = mkdtempSync(join(tmpdir(), 'dsh-mkt-local-'));
+  try {
+    const x = spawnSync('tar', ['-xzf', plan.tgz, '-C', staging], { stdio: 'pipe', encoding: 'utf8' });
+    if (x.status !== 0) return { ok: false, error: 'tar 解包失败: ' + ((x.error && x.error.message) || x.stderr || '').slice(0, 300) };
+    const pkgJson = join(staging, 'package.json');
+    if (!existsSync(pkgJson)) return { ok: false, error: 'tgz 内无 package.json' };
+    const pkg = JSON.parse(readFileSync(pkgJson, 'utf8'));
+    const name = pkg.name;
+    if (!name) return { ok: false, error: 'package.json 缺 name' };
+
+    const profileDirP = profileDir(profile);
+    const vendorLocal = join(profileDirP, 'vendor-local');
+    mkdirSync(vendorLocal, { recursive: true });
+    const dest = join(vendorLocal, ...name.split('/'));
+    rmSync(dest, { recursive: true, force: true });
+    cpSync(staging, dest, { recursive: true });
+
+    // node_modules 里的包本体（加载器解析基础）
+    const nmDest = join(profileDirP, 'node_modules', ...name.split('/'));
+    mkdirSync(dirname(nmDest), { recursive: true });
+    rmSync(nmDest, { recursive: true, force: true });
+    cpSync(dest, nmDest, { recursive: true });
+
+    const isBundle = pkg.dsh && pkg.dsh.bundle && typeof pkg.dsh.bundle.patch === 'string';
+    const isClient = pkg.dsh && pkg.dsh.client && pkg.dsh.client.platform === 'web';
+    if (!isBundle) ensurePatchRow(profileDirP, name, 'pm-' + slugFromSource(plan.entry.source || name));
+    else registerBundle(profileDirP, name);
+
+    return { ok: true, name, isBundle, isClient, dest };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+/** 幂等 patch 行（与 dsh-plugin-marketplace ensureRow 同规则）。 */
+function ensurePatchRow(profileDirP, name, id) {
+  const patchFile = join(profileDirP, 'cordis.patch.yml');
+  let text = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : '[]\n';
+  if (text.includes(`name: '${name}'`) || text.includes(`name: "${name}"`)) return false;
+  const block = `- insert:\n    - id: ${id}\n      name: '${name}'\n`;
+  text = /^\s*\[\]\s*$/m.test(text) ? text.replace(/\[\]/m, block) : text.replace(/\s+$/, '') + '\n' + block;
+  writeFileSync(patchFile, text);
+  return true;
+}
+
+/** bundle 型登记：package.json dependencies(link:) + bundles 数组（幂等）。 */
+function registerBundle(profileDirP, name) {
+  const manifestFile = join(profileDirP, 'package.json');
+  const m = existsSync(manifestFile) ? JSON.parse(readFileSync(manifestFile, 'utf8')) : { name: 'dsh-profile-web-desktop', private: true };
+  m.dependencies = m.dependencies || {};
+  m.dsh = m.dsh || {};
+  m.dsh.profile = m.dsh.profile || {};
+  m.dsh.profile.bundles = m.dsh.profile.bundles || [];
+  const spec = `link:vendor-local/${name}`;
+  if (m.dependencies[name] !== spec) m.dependencies[name] = spec;
+  if (!m.dsh.profile.bundles.includes(name)) m.dsh.profile.bundles.push(name);
+  writeFileSync(manifestFile, JSON.stringify(m, null, 2) + '\n');
 }
