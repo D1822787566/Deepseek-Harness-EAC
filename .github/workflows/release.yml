@@ -26,7 +26,7 @@ jobs:
   release:
     name: 构建并发布（Windows x64）
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
     defaults:
       run:
         working-directory: dsh-desktop
@@ -95,6 +95,9 @@ jobs:
 
       - name: 运行测试
         run: npm test
+
+      - name: 构建离线市场镜像（全量，~1-3h）
+        run: npm run mirror-market
 
       - name: 构建产物（portable + NSIS 安装包 + SHA256SUMS）
         run: npm run dist
