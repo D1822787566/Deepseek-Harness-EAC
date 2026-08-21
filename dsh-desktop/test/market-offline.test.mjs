@@ -38,18 +38,27 @@ test('resolveCache: 命中返回 { slug, entry, tgz }', async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('offlineInstallPlan: 命中=local / 未命中=online / tgz 缺失=online 兜底', async () => {
+test('offlineInstallPlan: local 正路径（sha256 一致）/ missing-tgz / hash 不符 / miss', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mkt-plan-'))
-  fakeCache(dir)
   process.env.DSH_DESKTOP_MARKET_CACHE = dir
-  // tgz 不存在 → missing-tgz → online 兜底（hash 校验的前提是文件在）
+  const { createHash } = await import('node:crypto')
+  const correct = Buffer.from('fake-tgz-bytes')
+  const realSha = createHash('sha256').update(correct).digest('hex')
+  // 先写真实 sha 的 manifest + 匹配的 tgz（在首次 loadMarketManifest 之前）
+  writeFileSync(join(dir, 'dsh-pet.tgz'), correct)
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({
+    entries: { 'dsh-pet': { name: 'dsh-pet', version: '0.1.4', sha256: realSha, source: 'github:PC2005-cloud/dsh-pet', sizeBytes: correct.length } },
+  }))
+  // 1) local 正路径
+  assert.equal((await offlineInstallPlan('github:PC2005-cloud/dsh-pet')).mode, 'local')
+  // 2) tgz 删除 → missing-tgz → online
+  rmSync(join(dir, 'dsh-pet.tgz'), { force: true })
   assert.equal((await offlineInstallPlan('github:PC2005-cloud/dsh-pet')).mode, 'online')
+  // 3) 换内容 → hash 不符 → online
+  writeFileSync(join(dir, 'dsh-pet.tgz'), 'different-bytes')
+  assert.equal((await offlineInstallPlan('github:PC2005-cloud/dsh-pet')).mode, 'online')
+  // 4) miss
   assert.equal((await offlineInstallPlan('github:nobody/nothing')).mode, 'online')
-  // 补上真实 tgz（内容任意，sha256 必须匹配 manifest 才能 local）
-  writeFileSync(join(dir, 'dsh-pet.tgz'), 'fake-tgz-bytes')
-  const sha = 'x'.repeat(64) // manifest 里写死的 sha256 —— 与实际文件不符 → 仍 online
-  assert.equal((await offlineInstallPlan('github:PC2005-cloud/dsh-pet')).mode, 'online')
-  assert.equal(sha.length, 64)
   delete process.env.DSH_DESKTOP_MARKET_CACHE
   rmSync(dir, { recursive: true, force: true })
 })

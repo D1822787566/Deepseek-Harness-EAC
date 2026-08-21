@@ -1372,12 +1372,16 @@ export function marketCacheRoot() {
 }
 
 let manifestCache = null;
+let manifestCacheRoot = null;
 export function loadMarketManifest() {
   const root = marketCacheRoot();
   if (!root) return null;
-  if (manifestCache) return manifestCache;
+  // 按缓存根缓存：DSH_DESKTOP_MARKET_CACHE 变化（profile 切换/测试）时重读，
+  // 避免进程内长期服务过期快照。
+  if (manifestCache && manifestCacheRoot === root) return manifestCache;
   try {
     manifestCache = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+    manifestCacheRoot = root;
     return manifestCache;
   } catch { return null; }
 }
@@ -1419,7 +1423,7 @@ function sha256File(p) {
  */
 export async function offlineInstallPlan(source) {
   const hit = resolveCache(source);
-  if (!hit) return { mode: 'online' };
+  if (!hit) return { mode: 'online', reason: 'miss' };
   try {
     if (!existsSync(hit.tgz)) return { mode: 'online', reason: 'missing-tgz' };
     const sha = await sha256File(hit.tgz);
