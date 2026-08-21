@@ -709,17 +709,6 @@ function registryCats(data, lang) {
 /** Map a parsed plugins.json document onto the catalog card shape. */
 function registryToCatalog(data, lang) {
   const locale = pickLang(lang)
-  // 离线镜像打标：仓内条目 → offline（UI 显示「离线包内」）；experimental 透传。
-  // 原始目录条目只有 install（完整命令），source 用 parseCmd 现场解析。
-  if (Array.isArray(data.plugins)) {
-    for (const p of data.plugins) {
-      const cc = parseCmd(p.install)
-      const src = p.source || (cc && cc.source) || ''
-      const hit = src ? resolveCache(src) : null
-      if (hit) p.offline = true
-      p.experimental = p.experimental === true
-    }
-  }
   return {
     plugins: Array.isArray(data.plugins) ? data.plugins.map((p) => fromRegistryPlugin(p, locale)) : [],
     cats: registryCats(data, locale),
@@ -735,36 +724,44 @@ function registryToCatalog(data, lang) {
 async function loadCatalog(lang) {
   const now = Date.now()
   const locale = pickLang(lang)
+  let result
   if (catalogCache && catalogCache.lang === locale && now - catalogCache.at < CATALOG_TTL_MS) {
-    return { ...catalogCache.data, source: 'cache' }
-  }
-  // 1) The site's JSON API — the canonical target data.
-  try {
-    const r = await fetch(REGISTRY_URL, { redirect: 'follow', signal: AbortSignal.timeout(10000) })
-    if (!r.ok) throw new Error('HTTP ' + r.status)
-    const data = await r.json()
-    const parsed = registryToCatalog(data, locale)
-    if (parsed.plugins.length === 0) throw new Error('empty registry')
-    catalogCache = { at: now, lang: locale, data: parsed }
-    return { ...parsed, source: 'live' }
-  } catch {
-    // 2) Static page fallback (same card shape).
+    result = { ...catalogCache.data, source: 'cache' }
+  } else {
+    // 1) The site's JSON API — the canonical target data.
     try {
-      const r = await fetch(CATALOG_PAGE_URL, { redirect: 'follow', signal: AbortSignal.timeout(10000) })
+      const r = await fetch(REGISTRY_URL, { redirect: 'follow', signal: AbortSignal.timeout(10000) })
       if (!r.ok) throw new Error('HTTP ' + r.status)
-      const parsed = parseSite(await r.text())
-      if (parsed.plugins.length === 0) throw new Error('empty catalog')
+      const data = await r.json()
+      const parsed = registryToCatalog(data, locale)
+      if (parsed.plugins.length === 0) throw new Error('empty registry')
       catalogCache = { at: now, lang: locale, data: parsed }
-      return { ...parsed, source: 'live' }
+      result = { ...parsed, source: 'live' }
     } catch {
-      // 3) Bundled offline snapshot.
+      // 2) Static page fallback (same card shape).
       try {
-        const snap = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'catalog-snapshot.json'), 'utf8'))
-        if (Array.isArray(snap.plugins) && snap.plugins.length > 0) return { ...snap, source: 'snapshot' }
-      } catch {}
-      return { plugins: [], cats: [], source: 'none' }
+        const r = await fetch(CATALOG_PAGE_URL, { redirect: 'follow', signal: AbortSignal.timeout(10000) })
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        const parsed = parseSite(await r.text())
+        if (parsed.plugins.length === 0) throw new Error('empty catalog')
+        catalogCache = { at: now, lang: locale, data: parsed }
+        result = { ...parsed, source: 'live' }
+      } catch {
+        // 3) Bundled offline snapshot.
+        try {
+          const snap = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'catalog-snapshot.json'), 'utf8'))
+          if (Array.isArray(snap.plugins) && snap.plugins.length > 0) result = { ...snap, source: 'snapshot' }
+          else result = { plugins: [], cats: [], source: 'none' }
+        } catch {
+          result = { plugins: [], cats: [], source: 'none' }
+        }
+      }
     }
   }
+  // 统一出口：live/cache/snapshot 三种来源都走同一打标（离线镜像的核心场景
+  // ——完全离线时快照路径——也必须显示「离线包内」徽章）。
+  if (Array.isArray(result.plugins)) stampCatalogPlugins(result.plugins)
+  return result
 }
 
 /** Catalog cache: 5 minutes; snapshot path is the offline fallback. */
@@ -1418,6 +1415,17 @@ export function resolveCache(source) {
   const slug = slugFromSource(source);
   const entry = manifest.entries && manifest.entries[slug];
   return entry ? { slug, entry, tgz: join(root, slug + '.tgz') } : null;
+}
+
+/** 给目录条目打离线/实验性标（纯函数，可测）。experimental 透传为布尔。 */
+export function stampCatalogPlugins(plugins) {
+  if (!Array.isArray(plugins)) return plugins;
+  for (const p of plugins) {
+    const hit = resolveCache(p.source || p.install || p.cmd || '');
+    if (hit) p.offline = true;
+    p.experimental = p.experimental === true;
+  }
+  return plugins;
 }
 
 function sha256File(p) {
