@@ -103,15 +103,18 @@ if (require.main === module) {
     console.error('Rebuild (npm run dist) before publishing.');
     process.exitCode = 1;
   }
-  // 离线市场镜像完整性校验。repoRoot 默认是 dsh-desktop（__dirname/..），
-  // 也兼容显式传入仓库根目录的调用方式，两种锚点都探测一遍。
-  const cacheDir = [
+  // Offline market mirror integrity (dual anchor: script default cwd is dsh-desktop).
+  const cacheCandidates = [
     path.join(repoRoot, 'dsh-desktop', 'assets', 'market-cache'),
     path.join(repoRoot, 'assets', 'market-cache'),
-  ].find((p) => fs.existsSync(p));
+  ];
+  const cacheDir = cacheCandidates.find((p) => fs.existsSync(p));
   if (cacheDir) {
     const mc = verifyMarketCache(cacheDir);
-    console.log(`market-cache: ${mc.ok ? 'OK' : 'CORRUPT'} (${mc.count} 项)`);
-    if (!mc.ok) { console.error('  sha256 不匹配: ' + mc.bad.join(', ')); process.exitCode = 1; }
+    console.log(`market-cache: ${mc.ok ? 'OK' : 'CORRUPT'} (${mc.count} entries)`);
+    if (!mc.ok) {
+      console.error('  ' + (mc.error || ('sha256 mismatch: ' + mc.bad.join(', '))));
+      process.exitCode = 1;
+    }
   }
 }
