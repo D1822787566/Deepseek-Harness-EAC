@@ -26,10 +26,9 @@ const PLUGINS = [
   { name: 'Hidden Lab', cat: 'tools', offline: true, experimental: true },
 ];
 
-const installed = new Set(['Hidden Lab']);
-
 test('bundle exposes the pure filter core', () => {
-  loadCore();
+  const core = loadCore();
+  assert.deepEqual(Object.keys(core).sort(), ['countOffline', 'filterPlugins']);
   assert.match(bundle, /仅看离线包/);
   assert.match(bundle, /Offline only/);
 });
@@ -37,7 +36,7 @@ test('bundle exposes the pure filter core', () => {
 test('default filtering retains online and offline non-experimental plugins', () => {
   const core = loadCore();
   assert.deepEqual(
-    Array.from(core.filter(PLUGINS), (plugin) => plugin.name),
+    Array.from(core.filterPlugins(PLUGINS), (plugin) => plugin.name),
     ['Offline Tool', 'Online Tool', 'Offline Theme'],
   );
 });
@@ -45,7 +44,7 @@ test('default filtering retains online and offline non-experimental plugins', ()
 test('offline-only filtering keeps offline plugins and excludes experiments by default', () => {
   const core = loadCore();
   assert.deepEqual(
-    Array.from(core.filter(PLUGINS, { offlineOnly: true }), (plugin) => plugin.name),
+    Array.from(core.filterPlugins(PLUGINS, { showOffline: true }), (plugin) => plugin.name),
     ['Offline Tool', 'Offline Theme'],
   );
 });
@@ -58,12 +57,13 @@ test('offline-only composes with cat, search, installed, and experimental filter
     { name: 'Lab Uninstalled', cat: 'tools', offline: true, experimental: true },
     { name: 'Lab Online', cat: 'tools', offline: false, experimental: true },
   ];
+  const installed = new Set(['Hidden Lab']);
   installed.add('Offline Tool');
   installed.add('Lab Wrong Cat');
   installed.add('Lab Online');
   assert.deepEqual(
-    Array.from(core.filter(composedPlugins, {
-      offlineOnly: true,
+    Array.from(core.filterPlugins(composedPlugins, {
+      showOffline: true,
       cat: 'tools',
       query: 'lab',
       showInstalled: true,
@@ -76,9 +76,9 @@ test('offline-only composes with cat, search, installed, and experimental filter
 
 test('countOffline counts the original catalog and a themes subset', () => {
   const core = loadCore();
-  core.filter(PLUGINS, { offlineOnly: true });
+  core.filterPlugins(PLUGINS, { showOffline: true });
   assert.equal(core.countOffline(PLUGINS), 3);
-  core.filter(PLUGINS, { cat: 'themes' });
+  core.filterPlugins(PLUGINS, { cat: 'themes' });
   assert.equal(core.countOffline(PLUGINS), 3);
   assert.equal(core.countOffline(PLUGINS.filter((plugin) => plugin.cat === 'themes')), 1);
 });

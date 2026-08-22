@@ -10,7 +10,7 @@ function filterMarketPlugins(plugins, options) {
   const cat = opts.cat || 'all'
   const query = String(opts.query || '').trim().toLowerCase()
   const isInstalled = typeof opts.isInstalled === 'function' ? opts.isInstalled : () => false
-  const showOffline = opts.showOffline === true || opts.offlineOnly === true
+  const showOffline = opts.showOffline === true
 
   return (Array.isArray(plugins) ? plugins : []).filter((p) => {
     if (cat !== 'all' && p.cat !== cat) return false
@@ -27,7 +27,6 @@ function countOfflineMarketPlugins(plugins) {
 }
 
 window.__dshMarketFilterCore = {
-  filter: filterMarketPlugins,
   filterPlugins: filterMarketPlugins,
   countOffline: countOfflineMarketPlugins,
 }
