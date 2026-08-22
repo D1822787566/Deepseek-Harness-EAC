@@ -52,8 +52,18 @@ test('offline-only filtering keeps offline plugins and excludes experiments by d
 
 test('offline-only composes with cat, search, installed, and experimental filters', () => {
   const core = loadCore();
+  const composedPlugins = [
+    ...PLUGINS,
+    { name: 'Lab Wrong Cat', cat: 'themes', offline: true, experimental: true },
+    { name: 'Lab Uninstalled', cat: 'tools', offline: true, experimental: true },
+    { name: 'Lab Online', cat: 'tools', offline: false, experimental: true },
+    { name: 'Lab Stable', cat: 'tools', offline: true, experimental: false },
+  ];
+  installed.add('Lab Wrong Cat');
+  installed.add('Lab Online');
+  installed.add('Lab Stable');
   assert.deepEqual(
-    Array.from(core.filter(PLUGINS, {
+    Array.from(core.filter(composedPlugins, {
       offlineOnly: true,
       cat: 'tools',
       query: 'lab',
