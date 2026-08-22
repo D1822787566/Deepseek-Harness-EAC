@@ -19,12 +19,14 @@ function loadCore() {
   return context.window.__dshMarketFilterCore;
 }
 
-const fixtures = [
-  { name: 'Offline Tool', category: 'tools', offline: true, installed: false },
-  { name: 'Online Tool', category: 'tools', offline: false, installed: false },
-  { name: 'Offline Theme', category: 'themes', offline: true, installed: false },
-  { name: 'Hidden Lab', category: 'tools', offline: true, experimental: true, installed: true },
+const PLUGINS = [
+  { name: 'Offline Tool', cat: 'tools', offline: true },
+  { name: 'Online Tool', cat: 'tools', offline: false },
+  { name: 'Offline Theme', cat: 'themes', offline: true },
+  { name: 'Hidden Lab', cat: 'tools', offline: true, experimental: true },
 ];
+
+const installed = new Set(['Hidden Lab']);
 
 test('bundle exposes the pure filter core', () => {
   loadCore();
@@ -35,7 +37,7 @@ test('bundle exposes the pure filter core', () => {
 test('default filtering retains online and offline non-experimental plugins', () => {
   const core = loadCore();
   assert.deepEqual(
-    core.filter(fixtures).map((plugin) => plugin.name),
+    Array.from(core.filter(PLUGINS), (plugin) => plugin.name),
     ['Offline Tool', 'Online Tool', 'Offline Theme'],
   );
 });
@@ -43,27 +45,31 @@ test('default filtering retains online and offline non-experimental plugins', ()
 test('offline-only filtering keeps offline plugins and excludes experiments by default', () => {
   const core = loadCore();
   assert.deepEqual(
-    core.filter(fixtures, { offlineOnly: true }).map((plugin) => plugin.name),
+    Array.from(core.filter(PLUGINS, { offlineOnly: true }), (plugin) => plugin.name),
     ['Offline Tool', 'Offline Theme'],
   );
 });
 
-test('offline-only composes with category, search, installed, and experimental filters', () => {
+test('offline-only composes with cat, search, installed, and experimental filters', () => {
   const core = loadCore();
   assert.deepEqual(
-    core.filter(fixtures, {
+    Array.from(core.filter(PLUGINS, {
       offlineOnly: true,
-      category: 'tools',
+      cat: 'tools',
       query: 'lab',
-      installedOnly: true,
+      showInstalled: true,
       showExperimental: true,
-    }).map((plugin) => plugin.name),
+      isInstalled: (plugin) => installed.has(plugin.name),
+    }), (plugin) => plugin.name),
     ['Hidden Lab'],
   );
 });
 
-test('countOffline counts the complete catalog and a category subset', () => {
+test('countOffline counts the original catalog and a themes subset', () => {
   const core = loadCore();
-  assert.equal(core.countOffline(fixtures), 3);
-  assert.equal(core.countOffline(fixtures.filter((plugin) => plugin.category === 'themes')), 1);
+  core.filter(PLUGINS, { offlineOnly: true });
+  assert.equal(core.countOffline(PLUGINS), 3);
+  core.filter(PLUGINS, { cat: 'themes' });
+  assert.equal(core.countOffline(PLUGINS), 3);
+  assert.equal(core.countOffline(PLUGINS.filter((plugin) => plugin.cat === 'themes')), 1);
 });
