@@ -58,6 +58,7 @@ test('offline-only composes with cat, search, installed, and experimental filter
     { name: 'Lab Uninstalled', cat: 'tools', offline: true, experimental: true },
     { name: 'Lab Online', cat: 'tools', offline: false, experimental: true },
   ];
+  installed.add('Offline Tool');
   installed.add('Lab Wrong Cat');
   installed.add('Lab Online');
   assert.deepEqual(
