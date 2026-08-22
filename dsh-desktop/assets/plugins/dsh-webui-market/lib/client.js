@@ -5,6 +5,33 @@
 // Install/uninstall run as background ops on the Host: the panel submits, gets
 // an op id, and polls. The op lives in a fixed modal overlay (never lost by
 // scrolling), can be minimized to a status chip, and survives page refreshes.
+function filterMarketPlugins(plugins, options) {
+  const opts = options || {}
+  const cat = opts.cat || 'all'
+  const query = String(opts.query || '').trim().toLowerCase()
+  const isInstalled = typeof opts.isInstalled === 'function' ? opts.isInstalled : () => false
+  const showOffline = opts.showOffline === true || opts.offlineOnly === true
+
+  return (Array.isArray(plugins) ? plugins : []).filter((p) => {
+    if (cat !== 'all' && p.cat !== cat) return false
+    if (p.experimental && !opts.showExperimental) return false
+    if (opts.showInstalled && !isInstalled(p)) return false
+    if (showOffline && p.offline !== true) return false
+    if (query && ![p.name, p.desc, p.by].some((value) => String(value || '').toLowerCase().includes(query))) return false
+    return true
+  })
+}
+
+function countOfflineMarketPlugins(plugins) {
+  return (Array.isArray(plugins) ? plugins : []).filter((p) => p.offline === true).length
+}
+
+window.__dshMarketFilterCore = {
+  filter: filterMarketPlugins,
+  filterPlugins: filterMarketPlugins,
+  countOffline: countOfflineMarketPlugins,
+}
+
 window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', factory: (require) => {
   var module = { exports: {} }; var exports = module.exports;
 
@@ -104,7 +131,7 @@ window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', fact
 
   const STR = {
     zh: {
-      search: '搜索插件…', all: '全部', instFilter: '已安装', detail: '详情', collapse: '收起',
+      search: '搜索插件…', all: '全部', instFilter: '已安装', offlineFilter: '仅看离线包', detail: '详情', collapse: '收起',
       install: '安装', uninstall: '卸载', execute: '执行', cancel: '取消', close: '关闭',
       loading: '加载插件目录…', noMatch: '没有匹配的插件',
       binPlaceholder: 'dsh CLI 路径（自动探测失败时填写，已记住上次填写）', reprobe: '重新探测',
@@ -131,7 +158,7 @@ window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', fact
       marketBanner: '两个插件市场并存：本页为精选目录（awesome-dsh-plugin.com）；另一个「Zat 可视化市场」（GitHub dsh-plugin 检索 + 中文简介）已内置，见 设置 → 插件 中的 Zat 标签页。',
     },
     en: {
-      search: 'Search plugins…', all: 'All', instFilter: 'Installed', detail: 'Details', collapse: 'Collapse',
+      search: 'Search plugins…', all: 'All', instFilter: 'Installed', offlineFilter: 'Offline only', detail: 'Details', collapse: 'Collapse',
       install: 'Install', uninstall: 'Uninstall', execute: 'Run', cancel: 'Cancel', close: 'Close',
       loading: 'Loading plugin directory…', noMatch: 'No matching plugins',
       binPlaceholder: 'dsh CLI path (fill when auto-detection fails; remembered)', reprobe: 'Re-probe',
@@ -239,6 +266,7 @@ window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', fact
     const [query, setQuery] = useState('')
     const [cat, setCat] = useState('all')
     const [showInstalled, setShowInstalled] = useState(false)
+    const [showOffline, setShowOffline] = useState(false)
     // 实验性内容默认折叠（NSFW/成人/硬件控制类），勾选后才显示。
     const [showExperimental, setShowExperimental] = useState(false)
     const [sortBy, setSortBy] = useState('default')
@@ -412,17 +440,17 @@ window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', fact
     const restoreOp = () => setOp((prev) => prev ? { ...prev, minimized: false } : prev)
     const closeOp = () => setOp(null)
 
-    const filtered = (data.plugins || []).filter((p) => {
-      if (cat !== 'all' && p.cat !== cat) return false
-      // 实验性内容默认隐藏，勾选「显示实验性内容」后才出现。
-      if (p.experimental && !showExperimental) return false
-      if (showInstalled && !isInstalled(p, data.installed)) return false
-      const q = query.trim().toLowerCase()
-      if (q && !((p.name || '').toLowerCase().includes(q) || (p.desc || '').toLowerCase().includes(q) || (p.by || '').toLowerCase().includes(q))) return false
-      return true
+    const filtered = filterMarketPlugins(data.plugins, {
+      cat,
+      query,
+      showExperimental,
+      showInstalled,
+      showOffline,
+      isInstalled: (p) => isInstalled(p, data.installed),
     })
 
     const installedCount = (data.plugins || []).filter((p) => isInstalled(p, data.installed)).length
+    const offlineCount = countOfflineMarketPlugins(data.plugins)
 
     // Sort, mirroring dsh-market: 最热 = stars desc (unknown stars last),
     // 最新 = added date desc; 默认 keeps the site's own order.
@@ -559,6 +587,10 @@ window.__ModuleLoader__.load({ id: '@sanqi-normal/dsh-webui-market-plugin', fact
             className: 'mkts-chip' + (showInstalled ? ' mkts-chip-on' : ''),
             onClick: () => { setShowInstalled(!showInstalled); setCat('all') },
           }, t('instFilter'), ' ', h('small', null, installedCount)),
+          h('button', {
+            className: 'mkts-chip' + (showOffline ? ' mkts-chip-on' : ''),
+            onClick: () => setShowOffline(!showOffline),
+          }, t('offlineFilter'), ' ', h('small', null, offlineCount)),
           h('div', { className: 'mkts-sort' },
             [['default', t('sortDefault')], ['hot', t('sortHot')], ['new', t('sortNew')]].map(([key, label]) =>
               h('button', { key, className: sortBy === key ? 'on' : '', onClick: () => setSortBy(key) }, label))),
