@@ -5056,11 +5056,18 @@ async function boot() {
 // App lifecycle
 // ---------------------------------------------------------------------------
 
-// Portable builds keep all data next to the exe.
-if (!app.isPackaged && process.env.DSH_DESKTOP_USERDATA) {
-  app.setPath('userData', process.env.DSH_DESKTOP_USERDATA);
-} else if (process.env.PORTABLE_EXECUTABLE_DIR) {
-  app.setPath('userData', path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data'));
+try {
+  // Portable builds keep all data next to the exe.
+  if (!app.isPackaged && process.env.DSH_DESKTOP_USERDATA) {
+    fs.mkdirSync(process.env.DSH_DESKTOP_USERDATA, { recursive: true });
+    app.setPath('userData', process.env.DSH_DESKTOP_USERDATA);
+  } else if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    fs.mkdirSync(path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data'), { recursive: true });
+    app.setPath('userData', path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data'));
+  }
+} catch (err) {
+  try { console.error('[startup isolation] failed to configure userData:', err); } catch {}
+  app.exit(1);
 }
 
 const gotLock = app.requestSingleInstanceLock();

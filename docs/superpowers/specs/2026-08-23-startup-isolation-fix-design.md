@@ -16,7 +16,7 @@ Development isolation is also applied too late. `DSH_DESKTOP_USERDATA` is proces
 
 Resolve the effective DSH home at the beginning of `ensureDesktopProfileInit()` using the existing portable expression: explicit `dshHome`, otherwise `os.homedir()/.dsh`. Use that value for both the desktop profile directory and the shared `profiles/node_modules` directory. Keep the existing idempotent junction behavior and error logging.
 
-Move the existing userData selection logic out of `boot()` and execute it before `app.requestSingleInstanceLock()`. Development builds honor `DSH_DESKTOP_USERDATA`; portable builds continue to use `<portable executable directory>/data`; normal installed builds retain Electron's default userData path.
+Move the existing userData selection logic out of `boot()` and execute it before `app.requestSingleInstanceLock()`. Development builds honor `DSH_DESKTOP_USERDATA`; portable builds continue to use `<portable executable directory>/data`; normal installed builds retain Electron's default userData path. Before calling Electron's `app.setPath`, recursively create a selected userData directory. If early directory or path setup fails, log the error and terminate with a nonzero exit before acquiring the single-instance lock; do not fall back to the default userData path.
 
 No machine-specific absolute paths are introduced. `schemastery` remains sourced from `__dirname/node_modules/schemastery`, which is already a declared dependency and is explicitly retained by `scripts/after-pack.js`.
 
@@ -28,6 +28,7 @@ If the bundled `schemastery` source is absent, initialization keeps its current 
 
 - Add a focused integration test that verifies profile initialization resolves home before creating the shared junction.
 - Add a lifecycle-order test that verifies userData selection appears before the single-instance lock and is no longer performed inside `boot()`.
+- Add lifecycle tests that verify selected userData directories are created before `app.setPath` and setup failures are logged and terminate early.
 - Run syntax checks and the full unit suite.
 - Launch against a fresh isolated `DSH_HOME` and `DSH_DESKTOP_USERDATA`; require the junction to exist and `dsh web` to report readiness without `home is not defined` or `ERR_MODULE_NOT_FOUND`.
 

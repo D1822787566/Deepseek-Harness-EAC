@@ -30,11 +30,37 @@ test('desktop userdata is configured before the single-instance lock and outside
   const lock = mainSrc.indexOf('app.requestSingleInstanceLock()', lifecycleStart);
   const bootSrc = mainSrc.slice(mainSrc.indexOf('async function boot()'), lifecycleStart);
   const lifecycleSrc = mainSrc.slice(lifecycleStart, lock);
-  const firstExecutable = lifecycleSrc.replace(/^(?:\s*\/\/[^\r\n]*(?:\r?\n|$))+/, '').trimStart();
+  const firstExecutable = lifecycleSrc
+    .replace(/^(?:\s*\/\/[^\r\n]*(?:\r?\n|$))+/, '')
+    .replace(/^\s*try\s*\{\s*/, '')
+    .replace(/^(?:\s*\/\/[^\r\n]*(?:\r?\n|$))+/, '')
+    .trimStart();
   const userDataBranches = /^if\s*\(\s*!app\.isPackaged\s*&&\s*process\.env\.DSH_DESKTOP_USERDATA\s*\)\s*\{[\s\S]*?app\.setPath\(\s*['"]userData['"]\s*,\s*process\.env\.DSH_DESKTOP_USERDATA\s*\)\s*;?[\s\S]*?\}\s*else\s+if\s*\(\s*process\.env\.PORTABLE_EXECUTABLE_DIR\s*\)\s*\{[\s\S]*?app\.setPath\(\s*['"]userData['"]\s*,\s*path\.join\(\s*process\.env\.PORTABLE_EXECUTABLE_DIR\s*,\s*['"]data['"]\s*\)\s*\)/;
 
   assert.ok(lifecycleStart >= 0, 'App lifecycle section missing');
   assert.ok(lock >= 0, 'single-instance lock missing');
   assert.equal(/app\.setPath\(\s*['"]userData['"]/.test(bootSrc), false, 'userData setup must be outside boot()');
   assert.match(firstExecutable, userDataBranches, 'userData conditional must be the first lifecycle statement before the lock');
+});
+
+test('desktop userdata directories are created before app.setPath()', () => {
+  const lifecycleStart = mainSrc.indexOf('// App lifecycle');
+  const lock = mainSrc.indexOf('app.requestSingleInstanceLock()', lifecycleStart);
+  const lifecycleSrc = mainSrc.slice(lifecycleStart, lock);
+  const mkdir = lifecycleSrc.search(/fs\.mkdirSync\(\s*[^\n]+\s*,\s*\{\s*recursive\s*:\s*true\s*\}\s*\)/);
+  const setPath = lifecycleSrc.indexOf("app.setPath('userData'");
+
+  assert.ok(mkdir >= 0, 'early userData setup must create its target directory recursively');
+  assert.ok(setPath >= 0, 'early userData setup must call app.setPath()');
+  assert.ok(mkdir < setPath, 'userData directory must exist before app.setPath()');
+});
+
+test('early userdata setup logs failures and terminates before the lock', () => {
+  const lifecycleStart = mainSrc.indexOf('// App lifecycle');
+  const lock = mainSrc.indexOf('app.requestSingleInstanceLock()', lifecycleStart);
+  const lifecycleSrc = mainSrc.slice(lifecycleStart, lock);
+
+  assert.match(lifecycleSrc, /try\s*\{[\s\S]*?app\.setPath\(\s*['"]userData['"]/, 'early userData setup must guard filesystem/path setup');
+  assert.match(lifecycleSrc, /catch\s*\([^)]*\)\s*\{[\s\S]*?(?:log|console\.error)\(/, 'early setup failures must be explicitly logged');
+  assert.match(lifecycleSrc, /catch\s*\([^)]*\)\s*\{[\s\S]*?app\.exit\(\s*[1-9]\d*\s*\)/, 'early setup failures must terminate with nonzero exit');
 });
