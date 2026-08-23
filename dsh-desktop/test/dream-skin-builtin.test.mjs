@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative } from 'node:path';
+import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { RECOMMENDED_PLUGIN_IDS, buildCatalog } from '../scripts/onboarding.js';
 
+const require = createRequire(import.meta.url);
+const { load: loadYaml } = require('js-yaml');
+const { getMainFileMatchers } = require('app-builder-lib/out/fileMatcher');
 const DESKTOP_DIR = join(import.meta.dirname, '..');
 const PLUGIN_DIR = join(DESKTOP_DIR, 'assets', 'plugins', 'dsh-dream-skin');
 
@@ -23,6 +27,39 @@ function bundledPluginFiles(dir = PLUGIN_DIR, prefix = '') {
     else files.push(relative);
   }
   return files.sort();
+}
+
+function effectiveMainFileMatchers() {
+  const config = loadYaml(readFileSync(join(DESKTOP_DIR, 'electron-builder.yml'), 'utf8'));
+  const destination = join(DESKTOP_DIR, 'dist-test-app');
+  const outDir = join(DESKTOP_DIR, config.directories?.output || 'dist');
+  const platformPackager = {
+    info: {
+      projectDir: DESKTOP_DIR,
+      buildResourcesDir: config.directories?.buildResources || 'build',
+      config,
+      isPrepackedAppAsar: false,
+      debugLogger: { isEnabled: false, add() {} },
+    },
+  };
+  return getMainFileMatchers(
+    DESKTOP_DIR,
+    destination,
+    (value) => value,
+    {},
+    platformPackager,
+    outDir,
+    false,
+  );
+}
+
+function isIncludedByAnyMatcher(file, matchers) {
+  const stat = statSync(file);
+  return matchers.some((matcher) => {
+    const fromRelative = relative(matcher.from, file);
+    if (fromRelative.startsWith('..') || isAbsolute(fromRelative)) return false;
+    return matcher.createFilter()(file, stat);
+  });
 }
 
 test('bundles the dsh-dream-skin v0.3.0 web plugin manifest', () => {
@@ -80,6 +117,20 @@ test('electron-builder re-includes dream-skin readmes after the global markdown 
     const includeIndex = patterns.indexOf(readme);
     assert.notEqual(includeIndex, -1, `missing electron-builder re-include: ${readme}`);
     assert.ok(includeIndex > excludeIndex, `${readme} must be re-included after !**/*.md`);
+  }
+});
+
+test('effective electron-builder matchers package dream-skin type declarations', () => {
+  const matchers = effectiveMainFileMatchers();
+  for (const declaration of [
+    join(PLUGIN_DIR, 'lib', 'types', 'index.d.ts'),
+    join(PLUGIN_DIR, 'lib', 'types', 'client', 'index.d.ts'),
+  ]) {
+    assert.equal(
+      isIncludedByAnyMatcher(declaration, matchers),
+      true,
+      `effective matchers exclude ${relative(DESKTOP_DIR, declaration)}:\n${matchers.join('\n')}`,
+    );
   }
 });
 

@@ -16,7 +16,7 @@
 - Create `dsh-desktop/test/dream-skin-builtin.test.mjs`: integration contract for asset shape, packaged README inclusion order, network boundary, loader identity, built-in registration, and first-run recommendation.
 - Modify `dsh-desktop/main.js`: add the plugin to `COMPANION_PLUGINS` with no `disabled` flag.
 - Modify `dsh-desktop/scripts/onboarding.js`: add `dream-skin` to the recommended default selection.
-- Modify `dsh-desktop/electron-builder.yml`: after the global Markdown exclusion, explicitly re-include Dream Skin's `README.md` and `README.en.md` so both ship in packaged builds.
+- Modify `dsh-desktop/electron-builder.yml`: after the global Markdown exclusion, explicitly re-include Dream Skin's `README.md` and `README.en.md`; add an independent FileSet for `lib/types/**/*.d.ts` so electron-builder's automatic main-matcher exclusion cannot remove the declarations.
 
 ### Task 1: Add the failing built-in integration contract
 
@@ -151,6 +151,17 @@ xcopy E:\project_space\dshtest\dsh-dream-skin\lib assets\plugins\dsh-dream-skin\
 
 Expected: `lib/index.js`, `lib/client.js`, and `lib/types/**` are copied; `.github`, `tests`, `wallpapers`, and `docs` remain absent. Before handoff, apply the approved one-line offline patch to vendored `lib/client.js` by deleting only the Google Fonts remote `@import`.
 
+Keep the type declarations in the packaged app with an independent electron-builder FileSet:
+
+```yaml
+  - from: assets/plugins/dsh-dream-skin/lib/types
+    to: assets/plugins/dsh-dream-skin/lib/types
+    filter:
+      - "**/*.d.ts"
+```
+
+`from` and `to` intentionally use the same app-relative directory, so `index.d.ts` and `client/index.d.ts` land directly under `app/assets/plugins/dsh-dream-skin/lib/types` without another nested `types` segment. The object FileSet becomes a matcher separate from the app-root matcher and therefore does not receive electron-builder's automatic `!**/*.{...,d.ts,...}` exclusion.
+
 - [ ] **Step 4: Verify source fidelity and the one-line offline adaptation**
 
 Run:
@@ -167,7 +178,7 @@ git diff --no-index --unified=0 E:\project_space\dshtest\dsh-dream-skin\lib\clie
 node --test test\dream-skin-builtin.test.mjs
 ```
 
-Expected: all distribution files except `lib/client.js` are byte-identical and their comparison commands exit 0. The client diff exits 1 because it contains exactly one approved deletion: the `fonts.googleapis.com` remote `@import`; no other client lines differ. The integration test passes, enforces that neither `fonts.googleapis.com` nor `fonts.gstatic.com` can appear in the vendored client, and verifies that electron-builder re-includes both Dream Skin README files after `!**/*.md`.
+Expected: all distribution files except `lib/client.js` are byte-identical and their comparison commands exit 0. The client diff exits 1 because it contains exactly one approved deletion: the `fonts.googleapis.com` remote `@import`; no other client lines differ. The integration test passes, enforces that neither `fonts.googleapis.com` nor `fonts.gstatic.com` can appear in the vendored client, verifies that electron-builder re-includes both Dream Skin README files after `!**/*.md`, and uses the installed app-builder-lib's real `getMainFileMatchers` plus each matcher's `createFilter` to prove both `.d.ts` files are included by an effective matcher.
 
 - [ ] **Step 5: Run syntax checks on the copied JavaScript**
 
@@ -217,7 +228,7 @@ Run from `dsh-desktop/`:
 node --test test\dream-skin-builtin.test.mjs test\onboarding-selection.test.mjs test\builtin-collision.test.mjs test\bundled-files.test.mjs
 ```
 
-Expected: all tests pass. This proves the source asset contract, packaged README re-include order, default registration, first-run selection, existing same-name takeover behavior, and general electron-builder runtime file coverage remain valid.
+Expected: all tests pass. This proves the source asset contract, packaged README re-include order, effective matcher coverage for both type declarations, default registration, first-run selection, existing same-name takeover behavior, and general electron-builder runtime file coverage remain valid.
 
 - [ ] **Step 4: Run syntax checks for modified code**
 
