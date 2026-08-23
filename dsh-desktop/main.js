@@ -3072,6 +3072,7 @@ const COMPANION_PLUGINS = [
   // 社区插件市场（awesome-dsh-plugin.com 目录）：内置分发，替换早期 npm 检索版市场。
   { id: 'dsh-market-plugin', name: '@sanqi-normal/dsh-webui-market-plugin', dir: 'dsh-webui-market' },
   { id: 'skin-switch', name: '@deepseek-ai/dsh-skin-switch' },
+  { id: 'dream-skin', name: 'dsh-dream-skin' },
   { id: 'easy-setup', name: '@deepseek-ai/dsh-easy-setup' },
   // 社区功能插件（视觉 / 人设 / 长期记忆 / 移动端布局修复）：npm registry
   // 拉取后随应用内置分发。绝不能写进 profile package.json 依赖 ——

@@ -26,6 +26,7 @@ const CORE_PLUGIN_IDS = new Set([
 // 外观微调、自动压缩、ClawBot 桥、会话浮窗等）默认不勾，用户按需勾选。
 const RECOMMENDED_PLUGIN_IDS = new Set([
   'skin-switch',
+  'dream-skin',
   'easy-setup',
   'picturereader',
   'soul-md',
