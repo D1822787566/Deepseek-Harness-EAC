@@ -28,6 +28,8 @@
 4. 在 `cordis.patch.yml` 中幂等写入 `dream-skin` loader 行。
 5. 保留用户后续在插件管理器或选择向导中作出的启停选择。
 
+同时把 `dream-skin` 加入 `dsh-desktop/scripts/onboarding.js` 的 `RECOMMENDED_PLUGIN_IDS`。全新用户首次启动时，选择向导据此默认勾选该插件；用户仍可在提交向导前取消勾选。这样“默认启用”同时覆盖升级用户、跳过向导的用户和完成首次向导的新用户。
+
 插件本身继续使用标准 DSH 双面插件契约：host 半边为 `lib/index.js`，浏览器半边为 `lib/client.js`。主题、壁纸、强调色和主题包状态仍由插件按既有实现保存，不在桌面壳新增配置存储。
 
 ## 兼容与迁移
@@ -53,9 +55,10 @@
 新增或调整项目测试以验证：
 
 1. `COMPANION_PLUGINS` 包含 `dream-skin`，名称为 `dsh-dream-skin`，且默认未禁用。
-2. 内置资产目录包含有效 `package.json`、`cordis.patch.yml`、`lib/index.js` 和 `lib/client.js`。
-3. package name、loader id 与注册表一致。
-4. 同步逻辑能生成默认启用的 patch 行，并继续满足幂等和同名包去重约束。
+2. `RECOMMENDED_PLUGIN_IDS` 包含 `dream-skin`，保证首次选择向导默认勾选。
+3. 内置资产目录包含有效 `package.json`、`cordis.patch.yml`、`lib/index.js` 和 `lib/client.js`。
+4. package name、loader id 与注册表一致。
+5. 同步逻辑能生成默认启用的 patch 行，并继续满足幂等和同名包去重约束。
 
 实施验证至少包括：
 
