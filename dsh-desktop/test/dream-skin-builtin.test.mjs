@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import { RECOMMENDED_PLUGIN_IDS, buildCatalog } from '../scripts/onboarding.js';
@@ -15,6 +15,16 @@ function companionPlugins() {
   return vm.runInNewContext(`(${match[1]})`);
 }
 
+function bundledPluginFiles(dir = PLUGIN_DIR, prefix = '') {
+  const files = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) files.push(...bundledPluginFiles(join(dir, entry.name), relative));
+    else files.push(relative);
+  }
+  return files.sort();
+}
+
 test('bundles the dsh-dream-skin v0.3.0 web plugin manifest', () => {
   const manifestPath = join(PLUGIN_DIR, 'package.json');
   assert.ok(existsSync(manifestPath), 'bundled package.json should exist');
@@ -26,21 +36,19 @@ test('bundles the dsh-dream-skin v0.3.0 web plugin manifest', () => {
   assert.equal(manifest.dsh?.client?.platform, 'web');
 });
 
-test('bundles only the required dream-skin runtime and documentation assets', () => {
-  for (const relative of [
-    'cordis.patch.yml',
-    'lib/index.js',
-    'lib/client.js',
-    'lib/types/index.d.ts',
+test('bundles exactly the required dream-skin runtime and documentation assets', () => {
+  const expected = [
     'LICENSE',
-    'README.md',
     'README.en.md',
-  ]) {
-    assert.ok(existsSync(join(PLUGIN_DIR, relative)), `missing bundled asset: ${relative}`);
-  }
-  for (const excluded of ['.github', 'tests', 'wallpapers', 'docs']) {
-    assert.equal(existsSync(join(PLUGIN_DIR, excluded)), false, `must not bundle: ${excluded}`);
-  }
+    'README.md',
+    'cordis.patch.yml',
+    'lib/client.js',
+    'lib/index.js',
+    'lib/types/client/index.d.ts',
+    'lib/types/index.d.ts',
+    'package.json',
+  ].sort();
+  assert.deepEqual(bundledPluginFiles(), expected);
 
   const patch = readFileSync(join(PLUGIN_DIR, 'cordis.patch.yml'), 'utf8');
   assert.match(patch, /^\s*- insert:\s*$[\s\S]*?^\s+- id:\s*dream-skin\s*$/m);
