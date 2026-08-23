@@ -178,6 +178,7 @@ function desktopProfileDir() {
 // 创建：package.json（bundles）+ pnpm-workspace.yaml + 空 patch 层。
 function ensureDesktopProfileInit() {
   try {
+    const home = dshHome || path.join(os.homedir(), '.dsh');
     const dir = desktopProfileDir();
     if (desktopProfile() === 'web') return; // 共享模式走官方模板
     fs.mkdirSync(dir, { recursive: true });
@@ -4927,13 +4928,6 @@ function computeOnboardingNeed() {
 }
 
 async function boot() {
-  // Portable builds keep all data next to the exe.
-  if (!app.isPackaged && process.env.DSH_DESKTOP_USERDATA) {
-    app.setPath('userData', process.env.DSH_DESKTOP_USERDATA);
-  } else if (process.env.PORTABLE_EXECUTABLE_DIR) {
-    app.setPath('userData', path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data'));
-  }
-
   userDataDir = app.getPath('userData');
   logsDir = path.join(userDataDir, 'logs');
   // DSH_HOME: respect an explicit override; otherwise let dsh use its own
@@ -5061,6 +5055,13 @@ async function boot() {
 // ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------
+
+// Portable builds keep all data next to the exe.
+if (!app.isPackaged && process.env.DSH_DESKTOP_USERDATA) {
+  app.setPath('userData', process.env.DSH_DESKTOP_USERDATA);
+} else if (process.env.PORTABLE_EXECUTABLE_DIR) {
+  app.setPath('userData', path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data'));
+}
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
