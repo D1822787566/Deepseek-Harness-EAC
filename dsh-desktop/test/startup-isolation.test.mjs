@@ -48,11 +48,16 @@ test('desktop userdata directories are created before app.setPath()', () => {
   const lock = mainSrc.indexOf('app.requestSingleInstanceLock()', lifecycleStart);
   const lifecycleSrc = mainSrc.slice(lifecycleStart, lock);
   const mkdir = lifecycleSrc.search(/fs\.mkdirSync\(\s*[^\n]+\s*,\s*\{\s*recursive\s*:\s*true\s*\}\s*\)/);
+  const portableMkdir = lifecycleSrc.search(/fs\.mkdirSync\(\s*path\.join\(\s*process\.env\.PORTABLE_EXECUTABLE_DIR\s*,\s*['"]data['"]\s*\)\s*,\s*\{\s*recursive\s*:\s*true\s*\}\s*\)/);
+  const portableSetPath = lifecycleSrc.search(/app\.setPath\(\s*['"]userData['"]\s*,\s*path\.join\(\s*process\.env\.PORTABLE_EXECUTABLE_DIR\s*,\s*['"]data['"]\s*\)\s*\)/);
   const setPath = lifecycleSrc.indexOf("app.setPath('userData'");
 
   assert.ok(mkdir >= 0, 'early userData setup must create its target directory recursively');
   assert.ok(setPath >= 0, 'early userData setup must call app.setPath()');
   assert.ok(mkdir < setPath, 'userData directory must exist before app.setPath()');
+  assert.ok(portableMkdir >= 0, 'portable userData directory must be created recursively');
+  assert.ok(portableSetPath >= 0, 'portable userData path setup is missing');
+  assert.ok(portableMkdir < portableSetPath, 'portable userData directory must exist before app.setPath()');
 });
 
 test('early userdata setup logs failures and terminates before the lock', () => {
