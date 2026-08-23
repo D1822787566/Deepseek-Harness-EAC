@@ -12,7 +12,7 @@
 
 ## File map
 
-- Create `dsh-desktop/assets/plugins/dsh-dream-skin/`: offline runtime snapshot copied from `E:\project_space\dshtest\dsh-dream-skin`.
+- Create `dsh-desktop/assets/plugins/dsh-dream-skin/`: offline runtime snapshot copied from `E:\project_space\dshtest\dsh-dream-skin`; vendored `lib/client.js` carries one approved offline patch that removes the Google Fonts remote `@import`.
 - Create `dsh-desktop/test/dream-skin-builtin.test.mjs`: integration contract for asset shape, loader identity, built-in registration, and first-run recommendation.
 - Modify `dsh-desktop/main.js`: add the plugin to `COMPANION_PLUGINS` with no `disabled` flag.
 - Modify `dsh-desktop/scripts/onboarding.js`: add `dream-skin` to the recommended default selection.
@@ -148,19 +148,25 @@ Run:
 xcopy E:\project_space\dshtest\dsh-dream-skin\lib assets\plugins\dsh-dream-skin\lib /E /I /Y
 ```
 
-Expected: `lib/index.js`, `lib/client.js`, and `lib/types/**` are copied; `.github`, `tests`, `wallpapers`, and `docs` remain absent.
+Expected: `lib/index.js`, `lib/client.js`, and `lib/types/**` are copied; `.github`, `tests`, `wallpapers`, and `docs` remain absent. Before handoff, apply the approved one-line offline patch to vendored `lib/client.js` by deleting only the Google Fonts remote `@import`.
 
-- [ ] **Step 4: Verify the copied runtime is byte-identical**
+- [ ] **Step 4: Verify source fidelity and the one-line offline adaptation**
 
 Run:
 
 ```bat
-git diff --no-index --exit-code E:\project_space\dshtest\dsh-dream-skin\lib assets\plugins\dsh-dream-skin\lib
+fc /B E:\project_space\dshtest\dsh-dream-skin\lib\index.js assets\plugins\dsh-dream-skin\lib\index.js
+git diff --no-index --exit-code E:\project_space\dshtest\dsh-dream-skin\lib\types assets\plugins\dsh-dream-skin\lib\types
 fc /B E:\project_space\dshtest\dsh-dream-skin\package.json assets\plugins\dsh-dream-skin\package.json
 fc /B E:\project_space\dshtest\dsh-dream-skin\cordis.patch.yml assets\plugins\dsh-dream-skin\cordis.patch.yml
+fc /B E:\project_space\dshtest\dsh-dream-skin\LICENSE assets\plugins\dsh-dream-skin\LICENSE
+fc /B E:\project_space\dshtest\dsh-dream-skin\README.md assets\plugins\dsh-dream-skin\README.md
+fc /B E:\project_space\dshtest\dsh-dream-skin\README.en.md assets\plugins\dsh-dream-skin\README.en.md
+git diff --no-index --unified=0 E:\project_space\dshtest\dsh-dream-skin\lib\client.js assets\plugins\dsh-dream-skin\lib\client.js
+node --test test\dream-skin-builtin.test.mjs
 ```
 
-Expected: every command exits with code 0 and reports no differences.
+Expected: all distribution files except `lib/client.js` are byte-identical and their comparison commands exit 0. The client diff exits 1 because it contains exactly one approved deletion: the `fonts.googleapis.com` remote `@import`; no other client lines differ. The integration test passes and enforces that neither `fonts.googleapis.com` nor `fonts.gstatic.com` can appear in the vendored client, including in a remote `@import`.
 
 - [ ] **Step 5: Run syntax checks on the copied JavaScript**
 
@@ -259,10 +265,10 @@ Run from the repository root:
 ```bat
 git show --stat --oneline HEAD
 git show --name-only --format= HEAD
-git diff HEAD~1 --unified=0 -- dsh-desktop\main.js dsh-desktop\scripts\onboarding.js dsh-desktop\test\dream-skin-builtin.test.mjs | rg "^\+.*(fetch\(|https\.request|pluginUpdateSources|PLUGIN_UPDATE)"
+git diff HEAD~1 --unified=0 -- dsh-desktop\main.js dsh-desktop\scripts\onboarding.js dsh-desktop\assets\plugins\dsh-dream-skin\lib\client.js dsh-desktop\test\dream-skin-builtin.test.mjs | rg "^\+.*(fetch\(|https\.request|pluginUpdateSources|PLUGIN_UPDATE|fonts\.(googleapis|gstatic)\.com)"
 ```
 
-Expected: changed implementation files match the file map. The final pipeline prints no added network-call or updater-source lines and exits with ripgrep's no-match status 1.
+Expected: changed implementation files match the file map. The final pipeline prints no added network-call, updater-source, or Google Fonts domain lines and exits with ripgrep's no-match status 1. Separately review the vendored-client source diff to confirm its only divergence is deletion of the remote font `@import`.
 
 - [ ] **Step 3: Inspect the final diff and worktree**
 

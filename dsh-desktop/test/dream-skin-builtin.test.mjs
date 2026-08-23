@@ -55,6 +55,15 @@ test('bundles exactly the required dream-skin runtime and documentation assets',
   assert.match(patch, /^\s+name:\s*['"]dsh-dream-skin['"]\s*$/m);
 });
 
+test('vendored dream-skin client does not load Google Fonts remotely', () => {
+  const client = readFileSync(join(PLUGIN_DIR, 'lib', 'client.js'), 'utf8');
+  assert.doesNotMatch(client, /fonts\.(?:googleapis|gstatic)\.com/i);
+  assert.doesNotMatch(
+    client,
+    /@import\s+(?:url\()?\s*['"]?https?:\/\/(?:fonts\.googleapis\.com|fonts\.gstatic\.com)\b/i,
+  );
+});
+
 test('registers dream-skin as an enabled companion plugin', () => {
   const plugin = companionPlugins().find(({ id }) => id === 'dream-skin');
   assert.ok(plugin, 'COMPANION_PLUGINS should contain dream-skin');

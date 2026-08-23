@@ -383,7 +383,6 @@ window.__ModuleLoader__.load({
 		 */
 		/** <style> content: hide the DSH marks, define the DFL glitch lockup. */
 		const DFL_BRAND_CSS = [
-			"@import url('https://fonts.googleapis.com/css2?family=Permanent+Marker&display=swap');",
 			/* hide the DSH whale mark + "DeepSeek Harness" wordmark in the sidebar brand row and rail (nested under _brandMark/_brandName/_railMark) */
 			"[class*='_logoRow'] [class*='_brandMark'] svg { display: none !important; }",
 			"[class*='_logoRow'] [class*='_brandName'] svg { display: none !important; }",

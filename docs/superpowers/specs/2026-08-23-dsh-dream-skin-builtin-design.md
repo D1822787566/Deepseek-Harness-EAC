@@ -11,6 +11,7 @@
 - 复制插件的可分发内容：`package.json`、`cordis.patch.yml`、`lib/`（含类型声明）、`LICENSE`、`README.md` 和 `README.en.md`。
 - 不复制 `.github/`、贡献流程文档、独立仓库测试、开发截图、示例壁纸和其他仅用于上游开发的材料。
 - 版本固定为本地来源当前的 `0.3.0`；本次不从 GitHub 或 npm 拉取内容。
+- vendored `lib/client.js` 相比权威本地来源仅有一项经用户确认的离线适配：删除 Google Fonts 的远程 `@import`，保留现有系统字体 fallback。其他分发文件以及 `client.js` 的其余内容保持来源版本。
 
 ## 架构与装配
 
@@ -41,7 +42,7 @@
 
 ## 网络与更新边界
 
-本次不向 `plugin-updater.js` 增加 GitHub/npm 更新源，也不新增下载或版本检查。插件版本只随桌面应用发版更新，保证构建和运行时均可离线。未来若要接入上游自动更新，需按 `AGENTS.md` 的网络边界规则另行设计和评审。
+本次不向 `plugin-updater.js` 增加 GitHub/npm 更新源，也不新增下载或版本检查。vendored client 移除对 `fonts.googleapis.com` / `fonts.gstatic.com` 的远程字体依赖，由系统字体 fallback 离线渲染；项目测试覆盖这两个域及其远程 `@import` 边界。插件版本只随桌面应用发版更新，保证构建和运行时均可离线。未来若要接入上游自动更新，需按 `AGENTS.md` 的网络边界规则另行设计和评审。
 
 ## 错误处理
 
@@ -59,6 +60,7 @@
 3. 内置资产目录包含有效 `package.json`、`cordis.patch.yml`、`lib/index.js` 和 `lib/client.js`。
 4. package name、loader id 与注册表一致。
 5. 同步逻辑能生成默认启用的 patch 行，并继续满足幂等和同名包去重约束。
+6. vendored `lib/client.js` 不包含 `fonts.googleapis.com`、`fonts.gstatic.com` 或指向它们的远程 `@import`。
 
 实施验证至少包括：
 
