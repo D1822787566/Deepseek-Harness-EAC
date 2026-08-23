@@ -13,9 +13,10 @@
 ## File map
 
 - Create `dsh-desktop/assets/plugins/dsh-dream-skin/`: offline runtime snapshot copied from `E:\project_space\dshtest\dsh-dream-skin`; vendored `lib/client.js` carries one approved offline patch that removes the Google Fonts remote `@import`.
-- Create `dsh-desktop/test/dream-skin-builtin.test.mjs`: integration contract for asset shape, loader identity, built-in registration, and first-run recommendation.
+- Create `dsh-desktop/test/dream-skin-builtin.test.mjs`: integration contract for asset shape, packaged README inclusion order, network boundary, loader identity, built-in registration, and first-run recommendation.
 - Modify `dsh-desktop/main.js`: add the plugin to `COMPANION_PLUGINS` with no `disabled` flag.
 - Modify `dsh-desktop/scripts/onboarding.js`: add `dream-skin` to the recommended default selection.
+- Modify `dsh-desktop/electron-builder.yml`: after the global Markdown exclusion, explicitly re-include Dream Skin's `README.md` and `README.en.md` so both ship in packaged builds.
 
 ### Task 1: Add the failing built-in integration contract
 
@@ -166,7 +167,7 @@ git diff --no-index --unified=0 E:\project_space\dshtest\dsh-dream-skin\lib\clie
 node --test test\dream-skin-builtin.test.mjs
 ```
 
-Expected: all distribution files except `lib/client.js` are byte-identical and their comparison commands exit 0. The client diff exits 1 because it contains exactly one approved deletion: the `fonts.googleapis.com` remote `@import`; no other client lines differ. The integration test passes and enforces that neither `fonts.googleapis.com` nor `fonts.gstatic.com` can appear in the vendored client, including in a remote `@import`.
+Expected: all distribution files except `lib/client.js` are byte-identical and their comparison commands exit 0. The client diff exits 1 because it contains exactly one approved deletion: the `fonts.googleapis.com` remote `@import`; no other client lines differ. The integration test passes, enforces that neither `fonts.googleapis.com` nor `fonts.gstatic.com` can appear in the vendored client, and verifies that electron-builder re-includes both Dream Skin README files after `!**/*.md`.
 
 - [ ] **Step 5: Run syntax checks on the copied JavaScript**
 
@@ -213,10 +214,10 @@ const RECOMMENDED_PLUGIN_IDS = new Set([
 Run from `dsh-desktop/`:
 
 ```bat
-node --test test\dream-skin-builtin.test.mjs test\onboarding-selection.test.mjs test\builtin-collision.test.mjs
+node --test test\dream-skin-builtin.test.mjs test\onboarding-selection.test.mjs test\builtin-collision.test.mjs test\bundled-files.test.mjs
 ```
 
-Expected: all tests pass. This proves the asset contract, default registration, first-run selection, and existing same-name takeover behavior remain valid.
+Expected: all tests pass. This proves the source asset contract, packaged README re-include order, default registration, first-run selection, existing same-name takeover behavior, and general electron-builder runtime file coverage remain valid.
 
 - [ ] **Step 4: Run syntax checks for modified code**
 
@@ -246,6 +247,7 @@ Expected: one commit containing only the vendored plugin, registration, onboardi
 - Verify: `dsh-desktop/assets/plugins/dsh-dream-skin/**`
 - Verify: `dsh-desktop/main.js`
 - Verify: `dsh-desktop/scripts/onboarding.js`
+- Verify: `dsh-desktop/electron-builder.yml`
 - Verify: `dsh-desktop/test/dream-skin-builtin.test.mjs`
 
 - [ ] **Step 1: Run the complete project test suite**

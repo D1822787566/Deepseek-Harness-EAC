@@ -3,7 +3,7 @@
 // 首次启动「内置插件选择向导」—— 纯逻辑层（无 fs / electron 依赖，可直接
 // 被 node --test 单元测试）。
 //
-// 背景：38 个内置插件（COMPANION_PLUGINS，另有 10 个内置皮肤）每次启动被
+// 背景：内置插件（COMPANION_PLUGINS，另有 10 个内置皮肤）每次启动被
 // syncCompanionPlugins 无条件全量复制 + 注册到 web profile，对只需要其中
 // 一部分的用户显得臃肿。本模块只负责「判定 / 目录 / 状态 / 操作清单」四件
 // 纯函数事，写盘与 IPC 由 main.js 完成。

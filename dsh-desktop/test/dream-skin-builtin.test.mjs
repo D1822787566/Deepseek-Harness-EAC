@@ -64,6 +64,25 @@ test('vendored dream-skin client does not load Google Fonts remotely', () => {
   );
 });
 
+test('electron-builder re-includes dream-skin readmes after the global markdown exclusion', () => {
+  const patterns = readFileSync(join(DESKTOP_DIR, 'electron-builder.yml'), 'utf8')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+    .map((line) => line.slice(2).replace(/^['"]|['"]$/g, ''));
+  const excludeIndex = patterns.indexOf('!**/*.md');
+  assert.notEqual(excludeIndex, -1, 'global markdown exclusion should exist');
+
+  for (const readme of [
+    'assets/plugins/dsh-dream-skin/README.md',
+    'assets/plugins/dsh-dream-skin/README.en.md',
+  ]) {
+    const includeIndex = patterns.indexOf(readme);
+    assert.notEqual(includeIndex, -1, `missing electron-builder re-include: ${readme}`);
+    assert.ok(includeIndex > excludeIndex, `${readme} must be re-included after !**/*.md`);
+  }
+});
+
 test('registers dream-skin as an enabled companion plugin', () => {
   const plugin = companionPlugins().find(({ id }) => id === 'dream-skin');
   assert.ok(plugin, 'COMPANION_PLUGINS should contain dream-skin');

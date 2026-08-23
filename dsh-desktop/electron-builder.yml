@@ -57,6 +57,8 @@ files:
   - scripts/make-release-hashes.js
   - package.json
   - "!**/*.md"
+  - assets/plugins/dsh-dream-skin/README.md
+  - assets/plugins/dsh-dream-skin/README.en.md
   # `!**/*.md` above would strip every .md from node_modules too, which removes
   # the SKILL.md files the bundled @deepseek-ai/dsh ships for its agent presets
   # and silently breaks the 创造模式 skills. Re-include them: later patterns
