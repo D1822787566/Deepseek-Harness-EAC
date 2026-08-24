@@ -23,7 +23,6 @@
     "@deepseek-ai/dsh-session": "*",
     "@deepseek-ai/dsh-settings": "*",
     "@deepseek-ai/schemastery": "*",
-    "@deepseek-ai/dsh-client-web-react": "*",
     "@deepseek-ai/dsh-client-runtime": "*",
     "@deepseek-ai/dsh-client-ui-settings": "*",
     "@deepseek-ai/dsh-client-ui-primitives": "*",

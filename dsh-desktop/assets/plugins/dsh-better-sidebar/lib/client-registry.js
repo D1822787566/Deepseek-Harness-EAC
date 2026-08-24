@@ -1298,7 +1298,6 @@ window.__ModuleLoader__.load({
 			"react-dom/client",
 			"cordis",
 			"@deepseek-ai/dsh-client-ui-slots",
-			"@deepseek-ai/dsh-client-web-react",
 			"@deepseek-ai/dsh-client-ui-primitives",
 			"@deepseek-ai/dsh-client-schema-form",
 			"@deepseek-ai/dsh-client-runtime/client"
