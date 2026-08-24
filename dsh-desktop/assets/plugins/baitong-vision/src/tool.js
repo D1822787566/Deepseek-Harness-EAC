@@ -36,6 +36,22 @@ export function createLookAtImageTool(ctx, getConfig) {
       },
       required: ['question'],
     },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          answer: { type: 'string' },
+          cdn_url: { type: 'string' },
+          error: { type: 'string' },
+        },
+        required: ['answer'],
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.error || value.answer,
+      }],
+    },
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       const question = String(args?.question ?? '').trim();

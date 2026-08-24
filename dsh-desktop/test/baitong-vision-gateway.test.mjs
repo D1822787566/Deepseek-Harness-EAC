@@ -262,6 +262,27 @@ test('twin: ctx.effect 注册还原，卸载时恢复原 adapter', async () => {
 // tool.js — look_at_image
 // ---------------------------------------------------------------------------
 
+test('look_at_image: declares a DSH output schema and text renderer', () => {
+  const tool = createLookAtImageTool({}, CFG())
+
+  assert.deepEqual(tool.output.schema, {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      answer: { type: 'string' },
+      cdn_url: { type: 'string' },
+      error: { type: 'string' },
+    },
+    required: ['answer'],
+  })
+  assert.deepEqual(tool.output.render({}, { answer: '红色按钮', cdn_url: 'https://cdn/1.png' }), [
+    { type: 'text', text: '红色按钮' },
+  ])
+  assert.deepEqual(tool.output.render({}, { answer: '', error: '没有可用的图片' }), [
+    { type: 'text', text: '没有可用的图片' },
+  ])
+})
+
 test('look_at_image: 空 question 抛错', async () => {
   const tool = createLookAtImageTool({}, CFG())
   await assert.rejects(tool.execute({ question: '   ' }, { signal: new AbortController().signal }), /non-empty/)
