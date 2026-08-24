@@ -33,3 +33,9 @@ test('settings plugins bind external stores through the current React API', asyn
     assert.match(client, /react\.useSyncExternalStore\(/, `${pluginName} must bind its settings store without the removed helper package`)
   }
 })
+
+test('baitong vision does not call the removed settings scope load API', async () => {
+  const client = await readFile(join(pluginsDir, 'baitong-vision', 'client.js'), 'utf8')
+
+  assert.doesNotMatch(client, /scope\.load\s*\(/)
+})

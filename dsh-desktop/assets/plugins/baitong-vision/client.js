@@ -141,13 +141,11 @@ window.__ModuleLoader__.load({
             .catch(function () {});
         }
         function loadSelection() {
-          scope.load().then(function () {
-            if (!alive) return;
-            var snap = scope.getSnapshot();
-            if (snap.status !== "ready" || !snap.value) return;
-            var sel = snap.value.vision_models;
-            if (Array.isArray(sel)) setSelected(sel);
-          }).catch(function () {});
+          if (!alive) return;
+          var snap = scope.getSnapshot();
+          if (snap.status !== "ready" || !snap.value) return;
+          var sel = snap.value.vision_models;
+          if (Array.isArray(sel)) setSelected(sel);
         }
         fetchModels();
         loadSelection();
@@ -222,15 +220,13 @@ window.__ModuleLoader__.load({
 
       function probe() {
         setState("probing");
-        scope.load().then(function () {
-          var snap = scope.getSnapshot();
-          if (snap.status !== "ready" || !snap.value) { setState("idle"); return; }
-          var base = String(snap.value.gateway_base || "").trim() || "http://localhost:8102";
-          var url = base.replace(/\/+$/, "") + "/health";
-          return fetch(url, { signal: AbortSignal.timeout(5000) })
-            .then(function (res) { setState(res.ok ? "ok" : "down"); })
-            .catch(function () { setState("down"); });
-        }).catch(function () { setState("idle"); });
+        var snap = scope.getSnapshot();
+        if (snap.status !== "ready" || !snap.value) { setState("idle"); return; }
+        var base = String(snap.value.gateway_base || "").trim() || "http://localhost:8102";
+        var url = base.replace(/\/+$/, "") + "/health";
+        fetch(url, { signal: AbortSignal.timeout(5000) })
+          .then(function (res) { setState(res.ok ? "ok" : "down"); })
+          .catch(function () { setState("down"); });
       }
 
       react.useEffect(function () { probe(); }, []);
@@ -260,7 +256,6 @@ window.__ModuleLoader__.load({
       var [error, setError] = react.useState(null);
 
       react.useEffect(function () {
-        scope.load();
         var alive = true;
         var sync = function () { if (alive) setSnapshot(scope.getSnapshot()); };
         var un = typeof scope.subscribe === "function" ? scope.subscribe(sync) : null;
@@ -318,7 +313,6 @@ window.__ModuleLoader__.load({
         });
         Promise.all(writes).then(function () {
           setBusy(false); setNotice(t("saved"));
-          if (scope.load) scope.load();
         }).catch(function (e) {
           setBusy(false); setError(t("error") + ": " + String(e && e.message || e));
         });
