@@ -6,8 +6,8 @@ import { join } from 'node:path'
 
 const pluginsDir = fileURLToPath(new URL('../assets/plugins/', import.meta.url))
 
-test('client plugins declare dsh-client-web-react when their browser module requires it', async () => {
-  const missing = []
+test('client plugins do not require the optional dsh-client-web-react runtime module', async () => {
+  const incompatible = []
   for (const entry of await readdir(pluginsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     const dir = join(pluginsDir, entry.name)
@@ -18,15 +18,14 @@ test('client plugins declare dsh-client-web-react when their browser module requ
         readFile(clientFile, 'utf8'),
         readFile(packageFile, 'utf8'),
       ])
-      if (!client.includes('require("@deepseek-ai/dsh-client-web-react")')) continue
       const pkg = JSON.parse(packageText)
-      if (pkg.peerDependencies?.['@deepseek-ai/dsh-client-web-react'] !== '*') {
-        missing.push(pkg.name || entry.name)
+      if (client.includes('require("@deepseek-ai/dsh-client-web-react")')) {
+        incompatible.push(pkg.name || entry.name)
       }
     } catch {
       // A plugin without a browser half is outside this contract.
     }
   }
 
-  assert.deepEqual(missing, [])
+  assert.deepEqual(incompatible, [])
 })
