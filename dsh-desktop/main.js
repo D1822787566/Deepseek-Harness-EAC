@@ -258,6 +258,19 @@ function log(tag, msg) {
   } catch {}
 }
 
+function createBootTimer() {
+  const startedAt = process.hrtime.bigint();
+  let previousAt = startedAt;
+  const elapsedMs = (from, to) => Number(to - from) / 1e6;
+  return {
+    mark(stage) {
+      const now = process.hrtime.bigint();
+      log('boot-time', `${stage}: +${elapsedMs(previousAt, now).toFixed(1)}ms total=${elapsedMs(startedAt, now).toFixed(1)}ms`);
+      previousAt = now;
+    },
+  };
+}
+
 function nodeExe() {
   if (app.isPackaged) return path.join(process.resourcesPath, 'node', 'node.exe');
   return path.resolve(__dirname, 'vendor', 'node', 'node.exe');
@@ -1913,6 +1926,7 @@ function makeUpdateProgressPusher(win) {
 
 async function runUpdateFlow(manual) {
   if (quitting) return;
+  if (!manual && updater.offlineMode(updCtx())) return;
   if (updateBusy) {
     if (manual) await showBox({ type: 'info', title: '更新', message: '更新正在进行中，请稍候。', buttons: ['确定'] });
     return;
@@ -2033,6 +2047,7 @@ function notifyPluginUpdates(updatable) {
 
 async function runPluginUpdateCheck(manual) {
   if (quitting) return;
+  if (!manual && updater.offlineMode(updCtx())) return;
   const ctx = updCtx();
   const sources = pluginUpdateSources();
   if (sources.length === 0) return;
@@ -4661,6 +4676,7 @@ function detectExternalDsh() {
 
 async function runClientUpdateFlow(manual) {
   if (quitting) return;
+  if (!manual && updater.offlineMode(updCtx())) return;
   if (clientUpdateBusy) {
     if (manual) await showBox({ type: 'info', title: '更新', message: '客户端更新正在进行中，请稍候。', buttons: ['确定'] });
     return;
@@ -4980,6 +4996,7 @@ function computeOnboardingNeed() {
 }
 
 async function boot() {
+  const bootTimer = createBootTimer();
   userDataDir = app.getPath('userData');
   logsDir = path.join(userDataDir, 'logs');
   // DSH_HOME: respect an explicit override; otherwise let dsh use its own
@@ -5030,6 +5047,7 @@ async function boot() {
   syncCompanionPlugins();
   syncBundledSkills();
   healProfileModules();
+  bootTimer.mark('profile-sync');
   createWindow();
   // koffi FFI 预检（koffi-preflight.js，V4 改异步：同步 spawnSync 会把主
   // 进程事件循环卡住最长 20 秒）：失败则注入目录选择器降级 overlay，
@@ -5038,6 +5056,7 @@ async function boot() {
   // 一次，并启动周期巡检（原生进程退出后自动恢复指向）。
   applyKoffiPreflightAsync()
     .then(() => {
+      bootTimer.mark('koffi-preflight');
       ensureGuard().repairJunctions();
       startJunctionWatchdog();
     })
@@ -5057,9 +5076,16 @@ async function boot() {
       // 这里覆盖崩溃/强杀场景；无缓存时为空操作）。
       await restoreKeptArtifacts(desktopProfile());
     })
-    .then(() => verifyBundledModules())
-    .then(() => startAndShowGuarded())
     .then(() => {
+      bootTimer.mark('profile-prepare');
+      return verifyBundledModules();
+    })
+    .then(() => {
+      bootTimer.mark('bundle-integrity');
+      return startAndShowGuarded();
+    })
+    .then(() => {
+      bootTimer.mark('web-ui-ready');
       // V4.1 更新保障②/③：新版健康启动 —— 清理官方 dsh 上一版本备份与
       // 便携版客户端旧 exe 备份（崩溃自回退的保险丝就此解除）。
       updater.confirmPreviousAgentHealthy(updCtx());
@@ -5084,17 +5110,18 @@ async function boot() {
       startBalanceLoop();
       offerPendingClientUpdate();
 
-      if (!process.env.DSH_DESKTOP_SKIP_AUTO_UPDATE) {
+      const offline = updater.offlineMode(updCtx());
+      if (!offline && !process.env.DSH_DESKTOP_SKIP_AUTO_UPDATE) {
         // dsh agent 更新：启动 15 秒后 + 每 6 小时。
         setTimeout(() => runUpdateFlow(false), 15000).unref();
         setInterval(() => runUpdateFlow(false), AUTO_UPDATE_INTERVAL_MS).unref();
       }
-      if (!process.env.DSH_DESKTOP_SKIP_CLIENT_UPDATE) {
+      if (!offline && !process.env.DSH_DESKTOP_SKIP_CLIENT_UPDATE) {
         // 客户端（封装）更新：启动 60 秒后 + 每 12 小时。
         setTimeout(() => runClientUpdateFlow(false), 60000).unref();
         setInterval(() => runClientUpdateFlow(false), 12 * 3600 * 1000).unref();
       }
-      if (!process.env.DSH_DESKTOP_SKIP_PLUGIN_UPDATE) {
+      if (!offline && !process.env.DSH_DESKTOP_SKIP_PLUGIN_UPDATE) {
         // 内置插件上游更新检查：启动 20 秒后 + 每 6 小时（24h 落盘节流
         // 在 runPluginUpdateCheck 内；默认仅提示，见 plugin-updater.js）。
         setTimeout(() => runPluginUpdateCheck(false), 20000).unref();
@@ -5104,9 +5131,10 @@ async function boot() {
       // 自动联网检查全部跳过，避免内网下每次启动撞 GitHub/Gitee 超时卡顿。
       // 手动「检查更新」菜单、环境变量 DSH_DESKTOP_SKIP_* 均不受影响；
       // 设 DSH_DESKTOP_OFFLINE=0 或 offlineMode=false 可恢复自动检查。
-      if (updater.offlineMode(updCtx())) {
+      if (offline) {
         log('boot', '离线模式：已禁用 dsh/客户端/插件自动更新检查（手动菜单仍可用；DSH_DESKTOP_OFFLINE=0 或 settings.offlineMode=false 恢复）');
       }
+      bootTimer.mark('boot-ready');
     })
     .catch((err) => handleBootFailure(err));
 }
