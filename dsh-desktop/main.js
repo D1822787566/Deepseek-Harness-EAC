@@ -34,6 +34,7 @@ const rescueAgent = require('./rescue-agent');
 const bundleIntegrity = require('./bundle-integrity');
 const { RendererRecovery } = require('./renderer-recovery');
 const { restrictedPortOf, chooseStableWebPort } = require('./stable-port');
+const { assertResolvedDshDependencyCohort } = require('./dsh-dependency-cohort');
 const {
   STANDARD_SHORTCUT_NAME,
   RUNTIME_SHORTCUT_DESCRIPTION,
@@ -290,8 +291,9 @@ function updCtx() {
 // bundled copy; the bundled copy is the fallback.
 function dshBin() {
   const ov = updater.overlayBinPath(updCtx());
-  if (ov && fs.existsSync(ov)) return ov;
-  return require.resolve('@deepseek-ai/dsh/lib/bin.js');
+  const bin = ov && fs.existsSync(ov) ? ov : require.resolve('@deepseek-ai/dsh/lib/bin.js');
+  assertResolvedDshDependencyCohort(bin);
+  return bin;
 }
 
 function dshVersion() { return updater.activeVersion(updCtx()) || '未知'; }

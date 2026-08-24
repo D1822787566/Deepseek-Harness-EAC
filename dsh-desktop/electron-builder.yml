@@ -33,6 +33,7 @@ files:
   - session-watcher.js
   - session-encoding-heal.js
   - profile-module-heal.js
+  - dsh-dependency-cohort.js
   - patch-row-heal.js
   - builtin-collision.js
   - plugin-manager-state.js

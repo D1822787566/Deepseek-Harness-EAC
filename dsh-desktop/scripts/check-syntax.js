@@ -26,6 +26,7 @@ const entryFiles = [
   'stable-port.js',
   'koffi-preflight.js',
   'profile-module-heal.js',
+  'dsh-dependency-cohort.js',
   'patch-row-heal.js',
   'plugin-guard.js',
   'rescue-agent.js',

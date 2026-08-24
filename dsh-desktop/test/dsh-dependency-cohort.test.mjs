@@ -1,0 +1,36 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+
+let assertDshDependencyCohort
+try {
+  ({ assertDshDependencyCohort } = await import('../dsh-dependency-cohort.js'))
+} catch {
+  // RED phase: the production guard does not exist yet.
+}
+
+test('accepts a coherent DSH release cohort', () => {
+  assert.equal(typeof assertDshDependencyCohort, 'function', 'dependency cohort guard is missing')
+  const versions = new Map([
+    ['@deepseek-ai/dsh', '0.1.0-rc.7'],
+    ['@deepseek-ai/dsh-web-app', '0.1.0-rc.7'],
+    ['@deepseek-ai/dsh-web-frontend', '0.1.0-rc.7'],
+    ['@deepseek-ai/dsh-client-modules', '0.1.0-rc.7'],
+  ])
+
+  assert.doesNotThrow(() => assertDshDependencyCohort((name) => versions.get(name)))
+})
+
+test('rejects the rc.7 CLI mixed with rc.8 web modules', () => {
+  assert.equal(typeof assertDshDependencyCohort, 'function', 'dependency cohort guard is missing')
+  const versions = new Map([
+    ['@deepseek-ai/dsh', '0.1.0-rc.7'],
+    ['@deepseek-ai/dsh-web-app', '0.1.0-rc.8'],
+    ['@deepseek-ai/dsh-web-frontend', '0.1.0-rc.8'],
+    ['@deepseek-ai/dsh-client-modules', '0.1.0-rc.8'],
+  ])
+
+  assert.throws(
+    () => assertDshDependencyCohort((name) => versions.get(name)),
+    /DSH dependency versions are mixed.*dsh@0\.1\.0-rc\.7.*dsh-web-frontend@0\.1\.0-rc\.8/s,
+  )
+})
